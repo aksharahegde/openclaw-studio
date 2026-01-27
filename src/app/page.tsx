@@ -45,6 +45,7 @@ const RESET_PROMPT_RE =
 const MESSAGE_ID_RE = /\s*\[message_id:[^\]]+\]\s*/gi;
 const UI_METADATA_PREFIX_RE =
   /^(?:Project path:|Workspace path:|A new session was started via \/new or \/reset)/i;
+const THINKING_BLOCK_RE = /<\s*think(?:ing)?\s*>([\s\S]*?)<\s*\/\s*think(?:ing)?\s*>/i;
 
 const stripUiMetadata = (text: string) => {
   if (!text) return text;
@@ -56,6 +57,43 @@ const stripUiMetadata = (text: string) => {
   }
   cleaned = cleaned.replace(MESSAGE_ID_RE, "").trim();
   return cleaned;
+};
+
+const formatThinkingTrace = (value: string): string | null => {
+  const firstLine = value
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => Boolean(line));
+  if (!firstLine) return null;
+  const deEmphasized = firstLine.replace(/^\*\*(.*)\*\*$/, "$1");
+  const cleaned = deEmphasized.replace(/\s+/g, " ").trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= 160) return cleaned;
+  return `${cleaned.slice(0, 157)}…`;
+};
+
+const extractThinkingTrace = (message: unknown): string | null => {
+  if (!message || typeof message !== "object") return null;
+  const m = message as Record<string, unknown>;
+  const role = typeof m.role === "string" ? m.role : "";
+  if (role && role !== "assistant") return null;
+  const content = m.content;
+  if (typeof content === "string") {
+    const match = content.match(THINKING_BLOCK_RE);
+    if (!match?.[1]) return null;
+    return formatThinkingTrace(match[1]);
+  }
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      const item = part as Record<string, unknown>;
+      if (item.type !== "thinking") continue;
+      if (typeof item.thinking === "string") {
+        const formatted = formatThinkingTrace(item.thinking);
+        if (formatted) return formatted;
+      }
+    }
+  }
+  return null;
 };
 
 type ChatHistoryMessage = Record<string, unknown>;
@@ -345,7 +383,7 @@ const AgentCanvasPage = () => {
               type: "updateTile",
               projectId,
               tileId,
-              patch: { status: "idle", runId: null, streamText: null },
+              patch: { status: "idle", runId: null, streamText: null, thinkingTrace: null },
             });
           }
           return;
@@ -358,6 +396,7 @@ const AgentCanvasPage = () => {
           patch.status = "idle";
           patch.runId = null;
           patch.streamText = null;
+          patch.thinkingTrace = null;
         }
         dispatch({
           type: "updateTile",
@@ -432,14 +471,14 @@ const AgentCanvasPage = () => {
           type: "updateTile",
           projectId: project.id,
           tileId,
-          patch: { outputLines: [], streamText: null, lastResult: null },
+          patch: { outputLines: [], streamText: null, thinkingTrace: null, lastResult: null },
         });
       }
       dispatch({
         type: "updateTile",
         projectId: project.id,
         tileId,
-        patch: { status: "running", runId, streamText: "", draft: "" },
+        patch: { status: "running", runId, streamText: "", thinkingTrace: null, draft: "" },
       });
       dispatch({
         type: "appendOutput",
@@ -477,7 +516,7 @@ const AgentCanvasPage = () => {
           type: "updateTile",
           projectId: project.id,
           tileId,
-          patch: { status: "error", runId: null, streamText: null },
+          patch: { status: "error", runId: null, streamText: null, thinkingTrace: null },
         });
         dispatch({
           type: "appendOutput",
@@ -603,9 +642,18 @@ const AgentCanvasPage = () => {
       }
       const nextTextRaw = extractText(payload.message);
       const nextText = nextTextRaw ? stripUiMetadata(nextTextRaw) : null;
+      const nextThinking = extractThinkingTrace(payload.message);
       if (payload.state === "delta") {
         if (typeof nextTextRaw === "string" && UI_METADATA_PREFIX_RE.test(nextTextRaw.trim())) {
           return;
+        }
+        if (nextThinking) {
+          dispatch({
+            type: "updateTile",
+            projectId: match.projectId,
+            tileId: match.tileId,
+            patch: { thinkingTrace: nextThinking, status: "running" },
+          });
         }
         if (typeof nextText === "string") {
           dispatch({
@@ -643,7 +691,7 @@ const AgentCanvasPage = () => {
           type: "updateTile",
           projectId: match.projectId,
           tileId: match.tileId,
-          patch: { streamText: null },
+          patch: { streamText: null, thinkingTrace: null },
         });
         return;
       }
@@ -654,6 +702,12 @@ const AgentCanvasPage = () => {
           projectId: match.projectId,
           tileId: match.tileId,
           line: "Run aborted.",
+        });
+        dispatch({
+          type: "updateTile",
+          projectId: match.projectId,
+          tileId: match.tileId,
+          patch: { streamText: null, thinkingTrace: null },
         });
         return;
       }
@@ -669,7 +723,7 @@ const AgentCanvasPage = () => {
           type: "updateTile",
           projectId: match.projectId,
           tileId: match.tileId,
-          patch: { streamText: null },
+          patch: { streamText: null, thinkingTrace: null },
         });
       }
     });
@@ -705,7 +759,7 @@ const AgentCanvasPage = () => {
           type: "updateTile",
           projectId: match.projectId,
           tileId: match.tileId,
-          patch: { status: "idle", runId: null, streamText: null },
+          patch: { status: "idle", runId: null, streamText: null, thinkingTrace: null },
         });
         return;
       }
@@ -715,7 +769,7 @@ const AgentCanvasPage = () => {
           type: "updateTile",
           projectId: match.projectId,
           tileId: match.tileId,
-          patch: { status: "error", runId: null, streamText: null },
+          patch: { status: "error", runId: null, streamText: null, thinkingTrace: null },
         });
       }
     });

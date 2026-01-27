@@ -124,6 +124,7 @@ export const AgentTile = ({
       : tile.status === "error"
         ? "bg-rose-200 text-rose-900"
         : "bg-emerald-200 text-emerald-900";
+  const showThinking = tile.status === "running" && Boolean(tile.thinkingTrace);
 
   return (
     <div
@@ -178,10 +179,15 @@ export const AgentTile = ({
           ref={outputRef}
           className="flex-1 overflow-auto rounded-2xl border border-slate-200 bg-white/60 p-3 text-xs text-slate-700"
         >
-          {tile.outputLines.length === 0 && !tile.streamText ? (
+          {tile.outputLines.length === 0 && !tile.streamText && !showThinking ? (
             <p className="text-slate-500">No output yet.</p>
           ) : (
             <div className="flex flex-col gap-2">
+              {showThinking ? (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-800">
+                  {tile.thinkingTrace}
+                </div>
+              ) : null}
               {tile.outputLines.map((line, index) => (
                 <div key={`${tile.id}-line-${index}`} className="agent-markdown">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{line}</ReactMarkdown>
