@@ -37,6 +37,12 @@ import {
   getAgentSummaryPatch,
   getChatSummaryPatch,
 } from "@/features/agents/state/summary";
+import {
+  dedupeRunLines,
+  mergeRuntimeStream,
+  resolveLifecyclePatch,
+  shouldPublishAssistantStream,
+} from "@/features/agents/state/runtimeEventBridge";
 import { fetchCronJobs } from "@/lib/cron/client";
 import { createRandomAgentName, normalizeAgentName } from "@/lib/names/agentNames";
 import type { AgentStoreSeed, AgentState } from "@/features/agents/state/store";
@@ -218,16 +224,6 @@ const buildHistoryLines = (messages: ChatHistoryMessage[]) => {
     deduped.push(line);
   }
   return { lines: deduped, lastAssistant, lastRole, lastUser };
-};
-
-const mergeStreamingText = (current: string, incoming: string): string => {
-  if (!incoming) return current;
-  if (!current) return incoming;
-  if (incoming.startsWith(current)) return incoming;
-  if (current.startsWith(incoming)) return current;
-  if (current.endsWith(incoming)) return current;
-  if (incoming.endsWith(current)) return incoming;
-  return `${current}${incoming}`;
 };
 
 const extractReasoningBody = (value: string): string | null => {
@@ -477,18 +473,38 @@ const AgentStudioPage = () => {
     return summary;
   }, []);
 
-  const markToolLineSeen = useCallback((runId: string | null, line: string) => {
-    if (!runId) return true;
-    const map = toolLinesSeenRef.current;
-    const set = map.get(runId) ?? new Set<string>();
-    if (!map.has(runId)) map.set(runId, set);
-    if (set.has(line)) return false;
-    set.add(line);
-    return true;
-  }, []);
+  const appendUniqueToolLines = useCallback(
+    (agentId: string, runId: string | null | undefined, lines: string[]) => {
+      if (lines.length === 0) return;
+      if (!runId) {
+        for (const line of lines) {
+          dispatch({
+            type: "appendOutput",
+            agentId,
+            line,
+          });
+        }
+        return;
+      }
+      const map = toolLinesSeenRef.current;
+      const current = map.get(runId) ?? new Set<string>();
+      const { appended, nextSeen } = dedupeRunLines(current, lines);
+      map.set(runId, nextSeen);
+      for (const line of appended) {
+        dispatch({
+          type: "appendOutput",
+          agentId,
+          line,
+        });
+      }
+    },
+    [dispatch]
+  );
 
-  const clearToolLinesSeen = useCallback((runId?: string | null) => {
+  const clearRunTracking = useCallback((runId?: string | null) => {
     if (!runId) return;
+    chatRunSeenRef.current.delete(runId);
+    assistantStreamByRunRef.current.delete(runId);
     toolLinesSeenRef.current.delete(runId);
   }, []);
 
@@ -1335,194 +1351,151 @@ const AgentStudioPage = () => {
 
   useEffect(() => {
     return client.onEvent((event: EventFrame) => {
-      if (event.event !== "chat") return;
-      const payload = event.payload as ChatEventPayload | undefined;
-      if (!payload?.sessionKey) return;
-      if (payload.runId) {
-        chatRunSeenRef.current.add(payload.runId);
-      }
-      const agentId = findAgentBySessionKey(state.agents, payload.sessionKey);
-      if (!agentId) return;
-      const agent = state.agents.find((entry) => entry.agentId === agentId);
-      const summaryPatch = getChatSummaryPatch(payload);
-      if (summaryPatch) {
-        dispatch({
-          type: "updateAgent",
-          agentId,
-          patch: { ...summaryPatch, sessionCreated: true },
-        });
-      }
-      const role =
-        payload.message && typeof payload.message === "object"
-          ? (payload.message as Record<string, unknown>).role
-          : null;
-      if (role === "user") {
-        return;
-      }
-      dispatch({
-        type: "markActivity",
-        agentId,
-      });
-      const nextTextRaw = extractText(payload.message);
-      const nextText = nextTextRaw ? stripUiMetadata(nextTextRaw) : null;
-      const nextThinking = extractThinking(payload.message ?? payload);
-      const toolLines = extractToolLines(payload.message ?? payload);
-      const isToolRole = role === "tool" || role === "toolResult";
-      if (payload.state === "delta") {
-        if (typeof nextTextRaw === "string" && isUiMetadataPrefix(nextTextRaw.trim())) {
+      if (event.event === "chat") {
+        const payload = event.payload as ChatEventPayload | undefined;
+        if (!payload?.sessionKey) return;
+        if (payload.runId) {
+          chatRunSeenRef.current.add(payload.runId);
+        }
+        const agentId = findAgentBySessionKey(state.agents, payload.sessionKey);
+        if (!agentId) return;
+        const agent = state.agents.find((entry) => entry.agentId === agentId);
+        const summaryPatch = getChatSummaryPatch(payload);
+        if (summaryPatch) {
+          dispatch({
+            type: "updateAgent",
+            agentId,
+            patch: { ...summaryPatch, sessionCreated: true },
+          });
+        }
+        const role =
+          payload.message && typeof payload.message === "object"
+            ? (payload.message as Record<string, unknown>).role
+            : null;
+        if (role === "user") {
           return;
         }
-        if (toolLines.length > 0) {
-          for (const line of toolLines) {
-            if (markToolLineSeen(payload.runId ?? null, line)) {
-              dispatch({
-                type: "appendOutput",
-                agentId,
-                line,
-              });
-            }
+        dispatch({
+          type: "markActivity",
+          agentId,
+        });
+        const nextTextRaw = extractText(payload.message);
+        const nextText = nextTextRaw ? stripUiMetadata(nextTextRaw) : null;
+        const nextThinking = extractThinking(payload.message ?? payload);
+        const toolLines = extractToolLines(payload.message ?? payload);
+        const isToolRole = role === "tool" || role === "toolResult";
+        if (payload.state === "delta") {
+          if (typeof nextTextRaw === "string" && isUiMetadataPrefix(nextTextRaw.trim())) {
+            return;
           }
+          appendUniqueToolLines(agentId, payload.runId ?? null, toolLines);
+          if (nextThinking) {
+            dispatch({
+              type: "updateAgent",
+              agentId,
+              patch: { thinkingTrace: nextThinking, status: "running" },
+            });
+          }
+          if (typeof nextText === "string") {
+            dispatch({
+              type: "setStream",
+              agentId,
+              value: nextText,
+            });
+            dispatch({
+              type: "updateAgent",
+              agentId,
+              patch: { status: "running" },
+            });
+          }
+          return;
         }
-        if (nextThinking) {
-          dispatch({
-            type: "updateAgent",
-            agentId,
-            patch: { thinkingTrace: nextThinking, status: "running" },
-          });
-        }
-        if (typeof nextText === "string") {
-          dispatch({
-            type: "setStream",
-            agentId,
-            value: nextText,
-          });
-          dispatch({
-            type: "updateAgent",
-            agentId,
-            patch: { status: "running" },
-          });
-        }
-        return;
-      }
 
-      if (payload.state === "final") {
-        if (payload.runId) {
-          chatRunSeenRef.current.delete(payload.runId);
-          assistantStreamByRunRef.current.delete(payload.runId);
-        }
-        if (
-          !nextThinking &&
-          role === "assistant" &&
-          !thinkingDebugRef.current.has(payload.sessionKey)
-        ) {
-          thinkingDebugRef.current.add(payload.sessionKey);
-          console.warn("No thinking trace extracted from chat event.", {
-            sessionKey: payload.sessionKey,
-            message: summarizeThinkingMessage(payload.message ?? payload),
+        if (payload.state === "final") {
+          clearRunTracking(payload.runId ?? null);
+          if (
+            !nextThinking &&
+            role === "assistant" &&
+            !thinkingDebugRef.current.has(payload.sessionKey)
+          ) {
+            thinkingDebugRef.current.add(payload.sessionKey);
+            console.warn("No thinking trace extracted from chat event.", {
+              sessionKey: payload.sessionKey,
+              message: summarizeThinkingMessage(payload.message ?? payload),
+            });
+          }
+          const thinkingText = nextThinking ?? agent?.thinkingTrace ?? null;
+          const thinkingLine = thinkingText ? formatThinkingMarkdown(thinkingText) : "";
+          if (thinkingLine) {
+            dispatch({
+              type: "appendOutput",
+              agentId,
+              line: thinkingLine,
+            });
+          }
+          appendUniqueToolLines(agentId, payload.runId ?? null, toolLines);
+          if (
+            !thinkingLine &&
+            role === "assistant" &&
+            agent &&
+            !agent.outputLines.some((line) => isTraceMarkdown(line.trim()))
+          ) {
+            void loadAgentHistory(agentId);
+          }
+          if (!isToolRole && typeof nextText === "string") {
+            dispatch({
+              type: "appendOutput",
+              agentId,
+              line: nextText,
+            });
+            dispatch({
+              type: "updateAgent",
+              agentId,
+              patch: { lastResult: nextText },
+            });
+          }
+          if (agent?.lastUserMessage && !agent.latestOverride) {
+            void updateSpecialLatestUpdate(agentId, agent, agent.lastUserMessage);
+          }
+          dispatch({
+            type: "updateAgent",
+            agentId,
+            patch: { streamText: null, thinkingTrace: null },
           });
+          return;
         }
-        const thinkingText = nextThinking ?? agent?.thinkingTrace ?? null;
-        const thinkingLine = thinkingText ? formatThinkingMarkdown(thinkingText) : "";
-        if (thinkingLine) {
+
+        if (payload.state === "aborted") {
+          clearRunTracking(payload.runId ?? null);
           dispatch({
             type: "appendOutput",
             agentId,
-            line: thinkingLine,
-          });
-        }
-        if (toolLines.length > 0) {
-          for (const line of toolLines) {
-            if (markToolLineSeen(payload.runId ?? null, line)) {
-              dispatch({
-                type: "appendOutput",
-                agentId,
-                line,
-              });
-            }
-          }
-        }
-        if (
-          !thinkingLine &&
-          role === "assistant" &&
-          agent &&
-          !agent.outputLines.some((line) => isTraceMarkdown(line.trim()))
-        ) {
-          void loadAgentHistory(agentId);
-        }
-        if (!isToolRole && typeof nextText === "string") {
-          dispatch({
-            type: "appendOutput",
-            agentId,
-            line: nextText,
+            line: "Run aborted.",
           });
           dispatch({
             type: "updateAgent",
             agentId,
-            patch: { lastResult: nextText },
+            patch: { streamText: null, thinkingTrace: null },
+          });
+          return;
+        }
+
+        if (payload.state === "error") {
+          clearRunTracking(payload.runId ?? null);
+          dispatch({
+            type: "appendOutput",
+            agentId,
+            line: payload.errorMessage ? `Error: ${payload.errorMessage}` : "Run error.",
+          });
+          dispatch({
+            type: "updateAgent",
+            agentId,
+            patch: { streamText: null, thinkingTrace: null },
           });
         }
-        if (agent?.lastUserMessage && !agent.latestOverride) {
-          void updateSpecialLatestUpdate(agentId, agent, agent.lastUserMessage);
-        }
-        dispatch({
-          type: "updateAgent",
-          agentId,
-          patch: { streamText: null, thinkingTrace: null },
-        });
-        clearToolLinesSeen(payload.runId ?? null);
         return;
       }
 
-      if (payload.state === "aborted") {
-        if (payload.runId) {
-          chatRunSeenRef.current.delete(payload.runId);
-          assistantStreamByRunRef.current.delete(payload.runId);
-        }
-        clearToolLinesSeen(payload.runId ?? null);
-        dispatch({
-          type: "appendOutput",
-          agentId,
-          line: "Run aborted.",
-        });
-        dispatch({
-          type: "updateAgent",
-          agentId,
-          patch: { streamText: null, thinkingTrace: null },
-        });
-        return;
-      }
-
-      if (payload.state === "error") {
-        if (payload.runId) {
-          chatRunSeenRef.current.delete(payload.runId);
-          assistantStreamByRunRef.current.delete(payload.runId);
-        }
-        clearToolLinesSeen(payload.runId ?? null);
-        dispatch({
-          type: "appendOutput",
-          agentId,
-          line: payload.errorMessage ? `Error: ${payload.errorMessage}` : "Run error.",
-        });
-        dispatch({
-          type: "updateAgent",
-          agentId,
-          patch: { streamText: null, thinkingTrace: null },
-        });
-      }
-    });
-  }, [
-    client,
-    dispatch,
-    loadAgentHistory,
-    state.agents,
-    summarizeThinkingMessage,
-    markToolLineSeen,
-    clearToolLinesSeen,
-    updateSpecialLatestUpdate,
-  ]);
-
-  useEffect(() => {
-    return client.onEvent((event: EventFrame) => {
       if (event.event !== "agent") return;
       const payload = event.payload as AgentEventPayload | undefined;
       if (!payload?.runId) return;
@@ -1543,6 +1516,7 @@ const AgentStudioPage = () => {
           ? (payload.data as Record<string, unknown>)
           : null;
       const hasChatEvents = chatRunSeenRef.current.has(payload.runId);
+
       if (stream === "assistant") {
         const rawText = typeof data?.text === "string" ? data.text : "";
         const rawDelta = typeof data?.delta === "string" ? data.delta : "";
@@ -1551,7 +1525,7 @@ const AgentStudioPage = () => {
         if (rawText) {
           mergedRaw = rawText;
         } else if (rawDelta) {
-          mergedRaw = mergeStreamingText(previousRaw, rawDelta);
+          mergedRaw = mergeRuntimeStream(previousRaw, rawDelta);
         }
         if (mergedRaw) {
           assistantStreamByRunRef.current.set(payload.runId, mergedRaw);
@@ -1574,18 +1548,25 @@ const AgentStudioPage = () => {
         if (mergedRaw && (!rawText || !isUiMetadataPrefix(rawText.trim()))) {
           const visibleText = extractText({ role: "assistant", content: mergedRaw }) ?? mergedRaw;
           const cleaned = stripUiMetadata(visibleText);
-          if (cleaned) {
-            if (!hasChatEvents || !agent.streamText?.trim()) {
-              dispatch({
-                type: "setStream",
-                agentId: match,
-                value: cleaned,
-              });
-            }
+          if (
+            cleaned &&
+            shouldPublishAssistantStream({
+              mergedRaw,
+              rawText,
+              hasChatEvents,
+              currentStreamText: agent.streamText ?? null,
+            })
+          ) {
+            dispatch({
+              type: "setStream",
+              agentId: match,
+              value: cleaned,
+            });
           }
         }
         return;
       }
+
       if (stream === "tool") {
         const phase = typeof data?.phase === "string" ? data.phase : "";
         const name = typeof data?.name === "string" ? data.name : "tool";
@@ -1602,12 +1583,8 @@ const AgentStudioPage = () => {
             name,
             arguments: args,
           });
-          if (line && markToolLineSeen(payload.runId, line)) {
-            dispatch({
-              type: "appendOutput",
-              agentId: match,
-              line,
-            });
+          if (line) {
+            appendUniqueToolLines(match, payload.runId, [line]);
           }
           return;
         }
@@ -1634,86 +1611,56 @@ const AgentStudioPage = () => {
           details,
           content,
         };
-        for (const line of extractToolLines(message)) {
-          if (markToolLineSeen(payload.runId, line)) {
-            dispatch({
-              type: "appendOutput",
-              agentId: match,
-              line,
-            });
-          }
-        }
+        appendUniqueToolLines(match, payload.runId, extractToolLines(message));
         return;
       }
+
       if (stream !== "lifecycle") return;
       const summaryPatch = getAgentSummaryPatch(payload);
       if (!summaryPatch) return;
       const phase = typeof data?.phase === "string" ? data.phase : "";
-      if (phase === "start") {
-        dispatch({
-          type: "updateAgent",
-          agentId: match,
-          patch: {
-            status: "running",
-            runId: payload.runId,
-            lastActivityAt: summaryPatch.lastActivityAt ?? null,
-            sessionCreated: true,
-          },
-        });
-        return;
-      }
-      if (phase === "end") {
-        if (agent.runId && agent.runId !== payload.runId) return;
-        assistantStreamByRunRef.current.delete(payload.runId);
-        if (!hasChatEvents) {
-          const finalText = agent.streamText?.trim();
-          if (finalText) {
-            dispatch({
-              type: "appendOutput",
-              agentId: match,
-              line: finalText,
-            });
-            dispatch({
-              type: "updateAgent",
-              agentId: match,
-              patch: { lastResult: finalText },
-            });
-          }
+      if (phase !== "start" && phase !== "end" && phase !== "error") return;
+      const transition = resolveLifecyclePatch({
+        phase,
+        incomingRunId: payload.runId,
+        currentRunId: agent.runId,
+        lastActivityAt: summaryPatch.lastActivityAt ?? Date.now(),
+      });
+      if (transition.kind === "ignore") return;
+      if (phase === "end" && !hasChatEvents) {
+        const finalText = agent.streamText?.trim();
+        if (finalText) {
+          dispatch({
+            type: "appendOutput",
+            agentId: match,
+            line: finalText,
+          });
+          dispatch({
+            type: "updateAgent",
+            agentId: match,
+            patch: { lastResult: finalText },
+          });
         }
-        chatRunSeenRef.current.delete(payload.runId);
-        clearToolLinesSeen(payload.runId);
-        dispatch({
-          type: "updateAgent",
-          agentId: match,
-          patch: {
-            status: "idle",
-            runId: null,
-            streamText: null,
-            thinkingTrace: null,
-            lastActivityAt: summaryPatch.lastActivityAt ?? null,
-          },
-        });
-        return;
       }
-      if (phase === "error") {
-        if (agent.runId && agent.runId !== payload.runId) return;
-        assistantStreamByRunRef.current.delete(payload.runId);
-        chatRunSeenRef.current.delete(payload.runId);
-        clearToolLinesSeen(payload.runId);
-        dispatch({
-          type: "updateAgent",
-          agentId: match,
-          patch: {
-            status: "error",
-            runId: null,
-            streamText: null,
-            thinkingTrace: null,
-            lastActivityAt: summaryPatch.lastActivityAt ?? null,
-          },
-        });
+      if (transition.clearRunTracking) {
+        clearRunTracking(payload.runId);
       }
+      dispatch({
+        type: "updateAgent",
+        agentId: match,
+        patch: transition.patch,
+      });
     });
-  }, [client, clearToolLinesSeen, dispatch, markToolLineSeen, state.agents]);
+  }, [
+    appendUniqueToolLines,
+    clearRunTracking,
+    client,
+    dispatch,
+    loadAgentHistory,
+    state.agents,
+    summarizeThinkingMessage,
+    updateSpecialLatestUpdate,
+  ]);
 
   const handleRenameAgent = useCallback(
     async (agentId: string, name: string) => {
