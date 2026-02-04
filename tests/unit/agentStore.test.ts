@@ -50,6 +50,44 @@ describe("agent store", () => {
     expect(state.agents[0]?.sessionCreated).toBe(true);
   });
 
+  it("resets_runtime_state_when_session_key_changes_on_hydration", () => {
+    const initialSeed: AgentStoreSeed = {
+      agentId: "agent-1",
+      name: "Agent One",
+      sessionKey: "agent:agent-1:studio:legacy",
+    };
+    let state = agentStoreReducer(initialAgentStoreState, {
+      type: "hydrateAgents",
+      agents: [initialSeed],
+    });
+    state = agentStoreReducer(state, {
+      type: "updateAgent",
+      agentId: "agent-1",
+      patch: {
+        sessionCreated: true,
+        outputLines: ["> old"],
+        lastResult: "old result",
+        runId: "run-1",
+      },
+    });
+
+    const nextSeed: AgentStoreSeed = {
+      agentId: "agent-1",
+      name: "Agent One",
+      sessionKey: "agent:agent-1:main",
+    };
+    state = agentStoreReducer(state, {
+      type: "hydrateAgents",
+      agents: [nextSeed],
+    });
+    const next = state.agents[0];
+    expect(next?.sessionKey).toBe("agent:agent-1:main");
+    expect(next?.sessionCreated).toBe(false);
+    expect(next?.outputLines).toEqual([]);
+    expect(next?.lastResult).toBeNull();
+    expect(next?.runId).toBeNull();
+  });
+
   it("tracks_unseen_activity_for_non_selected_agents", () => {
     const seeds: AgentStoreSeed[] = [
       {

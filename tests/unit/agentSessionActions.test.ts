@@ -35,13 +35,13 @@ const createAgent = (): AgentState => ({
 });
 
 describe("agent session actions", () => {
-  it("builds a patch that resets runtime state for a new studio session", () => {
-    const patch = buildNewSessionAgentPatch(createAgent(), "new-session");
+  it("builds a patch that resets runtime state for a session reset", () => {
+    const patch = buildNewSessionAgentPatch(createAgent());
 
-    expect(patch.sessionKey).toBe("agent:agent-1:studio:new-session");
+    expect(patch.sessionKey).toBe("agent:agent-1:studio:old-session");
     expect(patch.status).toBe("idle");
-    expect(patch.sessionCreated).toBe(false);
-    expect(patch.sessionSettingsSynced).toBe(false);
+    expect(patch.sessionCreated).toBe(true);
+    expect(patch.sessionSettingsSynced).toBe(true);
     expect(patch.outputLines).toEqual([]);
     expect(patch.streamText).toBeNull();
     expect(patch.thinkingTrace).toBeNull();

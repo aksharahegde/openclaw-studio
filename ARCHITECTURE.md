@@ -29,10 +29,10 @@ This keeps feature cohesion high while preserving a clear client/server boundary
 
 ## Main modules / bounded contexts
 - **Focused agent UI** (`src/features/agents`): focused agent panel, fleet sidebar, inspect panel, and local in-memory state + actions. The fleet sidebar includes a `New Agent` action that calls gateway config patching and works for both local and remote gateways. Agents render a status-first summary and latest-update preview driven by gateway events. Per-agent runtime controls (`model`, `thinking`) live in the chat header (`AgentChatPanel`), while settings sidebar actions are focused on rename, display toggles, new session, cron list/run/delete, and delete (`AgentSettingsPanel`). Gateway event classification (`presence`/`heartbeat` summary refresh and `chat`/`agent` runtime streams) is centralized in bridge helpers (`src/features/agents/state/runtimeEventBridge.ts`) and consumed from one gateway subscription path in `src/app/page.tsx`. Session setting mutations (model/thinking) are centralized in `src/features/agents/state/sessionSettingsMutations.ts` so optimistic state updates and sync/error behavior stay aligned. Full transcripts load only on explicit “Load history” actions.
-- **Studio settings** (`src/lib/studio`, `src/app/api/studio`): local settings store for gateway URL/token and focused preferences (`src/lib/studio/settings.ts`, `src/lib/studio/settings.server.ts`, `src/app/api/studio/route.ts`). `src/lib/studio/coordinator.ts` now owns both the `/api/studio` transport helpers and shared client-side load/patch scheduling for gateway, focused, and studio-session settings.
+- **Studio settings** (`src/lib/studio`, `src/app/api/studio`): local settings store for gateway URL/token and focused preferences (`src/lib/studio/settings.ts`, `src/lib/studio/settings.server.ts`, `src/app/api/studio/route.ts`). `src/lib/studio/coordinator.ts` now owns both the `/api/studio` transport helpers and shared client-side load/patch scheduling for gateway and focused settings.
 - **Gateway** (`src/lib/gateway`): WebSocket client for agent runtime (frames, connect, request/response). Session settings sync transport (`sessions.patch`) is centralized in `src/lib/gateway/sessionSettings.ts`. The OpenClaw control UI client is vendored in `src/lib/gateway/openclaw/GatewayBrowserClient.ts` with a sync script at `scripts/sync-openclaw-gateway-client.ts`.
 - **Gateway-backed config + agent-file edits** (`src/lib/gateway/agentConfig.ts`, `src/app/api/gateway/tools/route.ts`): agent create/rename/heartbeat/delete via `config.get` + `config.patch`, agent file read/write via `/tools/invoke` proxy.
-- **Session lifecycle actions** (`src/features/agents/state/agentSessionActions.ts`, `src/app/page.tsx`): per-agent “New session” resets local runtime transcript state and switches to a fresh studio session key for subsequent runs.
+- **Session lifecycle actions** (`src/features/agents/state/agentSessionActions.ts`, `src/app/page.tsx`): per-agent “New session” calls gateway `sessions.reset` on the current session key and resets local runtime transcript state.
 - **Local OpenClaw config + paths** (`src/lib/clawdbot`): state/config/.env path resolution with `OPENCLAW_*` env overrides (`src/lib/clawdbot/paths.ts`). Local config access is used for optional Discord provisioning and local path/config helpers; shared local config list helpers live in `src/lib/clawdbot/config.ts` and are reused by Discord provisioning. Gateway URL/token in Studio are sourced from studio settings.
 - **Shared agent config-list helpers** (`src/lib/agents/configList.ts`): pure `agents.list` read/write/upsert helpers reused by both gateway config patching (`src/lib/gateway/agentConfig.ts`) and local config access (`src/lib/clawdbot/config.ts`) to keep list-shape semantics aligned.
 - **Discord integration** (`src/lib/discord`, API route): channel provisioning and config binding (local gateway only).
@@ -49,15 +49,15 @@ This keeps feature cohesion high while preserving a clear client/server boundary
 
 ## Data flow & key boundaries
 ### 1) Studio settings + focused preferences
-- **Source of truth**: JSON settings file at `~/.openclaw/openclaw-studio/settings.json` (resolved via `resolveStateDir`, with legacy fallbacks in `src/lib/clawdbot/paths.ts`). Settings store the gateway URL/token plus per-gateway focused preferences and studio session ids.
+- **Source of truth**: JSON settings file at `~/.openclaw/openclaw-studio/settings.json` (resolved via `resolveStateDir`, with legacy fallbacks in `src/lib/clawdbot/paths.ts`). Settings store the gateway URL/token plus per-gateway focused preferences.
 - **Server boundary**: `src/app/api/studio/route.ts` loads/saves settings via `src/lib/studio/settings.server.ts`.
-- **Client boundary**: `useGatewayConnection` and focused/session flows in `src/app/page.tsx` use a shared `StudioSettingsCoordinator` to load settings, coalesce debounced `/api/studio` patch writes, and force immediate session-id writes when bootstrapping a new studio session.
+- **Client boundary**: `useGatewayConnection` and focused/session flows in `src/app/page.tsx` use a shared `StudioSettingsCoordinator` to load settings and coalesce debounced `/api/studio` patch writes.
 
 Flow:
 1. UI loads settings from `/api/studio`.
 2. Gateway URL/token seed the connection panel and auto-connect.
-3. Focused filter + selected agent + studio session id are loaded for the current gateway.
-4. UI schedules focused and gateway patches through the coordinator, while studio-session bootstrap uses an immediate coordinator patch; both paths converge on `/api/studio`.
+3. Focused filter + selected agent are loaded for the current gateway.
+4. UI schedules focused and gateway patches through the coordinator; both paths converge on `/api/studio`.
 
 ### 2) Agent runtime (gateway)
 - **Client-side only**: `GatewayClient` uses WebSocket to connect to the gateway and wraps the vendored `GatewayBrowserClient`.
@@ -109,7 +109,7 @@ Flow:
 - **Narrow local config mutation boundary**: local `openclaw.json` writes are limited to explicit local-only flows (currently Discord provisioning), and reuse shared list helpers instead of ad-hoc mutation paths; trade-off is less flexibility for local-only experimentation, but clearer ownership and lower drift risk.
 - **Shared `agents.list` helper layer**: gateway and local config paths now consume one pure helper module for list parsing/writing/upsert behavior; trade-off is one more shared dependency, but it reduces semantic drift and duplicate bug surface.
 - **Single gateway settings endpoint**: `/api/studio` is the sole Studio gateway URL/token source; trade-off is migration pressure on any older local-config-based callers, but it removes ambiguous ownership and dead paths.
-- **Shared client settings coordinator module**: `src/lib/studio/coordinator.ts` now owns `/api/studio` transport plus load/schedule/flush behavior for gateway + focused + session state; trade-off is introducing a central client singleton, but it removes wrapper indirection and duplicate timers/fetch paths.
+- **Shared client settings coordinator module**: `src/lib/studio/coordinator.ts` now owns `/api/studio` transport plus load/schedule/flush behavior for gateway + focused state; trade-off is introducing a central client singleton, but it removes wrapper indirection and duplicate timers/fetch paths.
 - **Vendored gateway client + sync script**: reduces drift from upstream OpenClaw UI; trade-off is maintaining a sync path and local copies of upstream helpers.
 - **Feature-first organization**: increases cohesion in UI; trade-off is more discipline to keep shared logic in `lib`.
 - **Node runtime for API routes**: required for filesystem access and tool proxying; trade-off is Node-only server runtime.

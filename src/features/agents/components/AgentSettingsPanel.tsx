@@ -11,6 +11,7 @@ type AgentSettingsPanelProps = {
   onRename: (value: string) => Promise<boolean>;
   onNewSession: () => Promise<void> | void;
   onDelete: () => void;
+  canDelete?: boolean;
   onToolCallingToggle: (enabled: boolean) => void;
   onThinkingTracesToggle: (enabled: boolean) => void;
   cronJobs: CronJobSummary[];
@@ -50,6 +51,7 @@ export const AgentSettingsPanel = ({
   onRename,
   onNewSession,
   onDelete,
+  canDelete = true,
   onToolCallingToggle,
   onThinkingTracesToggle,
   cronJobs,
@@ -275,21 +277,32 @@ export const AgentSettingsPanel = ({
           ) : null}
         </section>
 
-        <section className="rounded-md border border-destructive/30 bg-destructive/4 p-4">
-          <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-destructive">
-            Delete agent
-          </div>
-          <div className="mt-3 text-[11px] text-muted-foreground">
-            Removes the agent from the gateway config.
-          </div>
-          <button
-            className="mt-3 w-full rounded-md border border-destructive/50 bg-transparent px-3 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-destructive shadow-sm transition hover:bg-destructive/10"
-            type="button"
-            onClick={onDelete}
-          >
-            Delete agent
-          </button>
-        </section>
+        {canDelete ? (
+          <section className="rounded-md border border-destructive/30 bg-destructive/4 p-4">
+            <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-destructive">
+              Delete agent
+            </div>
+            <div className="mt-3 text-[11px] text-muted-foreground">
+              Removes the agent from the gateway config.
+            </div>
+            <button
+              className="mt-3 w-full rounded-md border border-destructive/50 bg-transparent px-3 py-2 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-destructive shadow-sm transition hover:bg-destructive/10"
+              type="button"
+              onClick={onDelete}
+            >
+              Delete agent
+            </button>
+          </section>
+        ) : (
+          <section className="rounded-md border border-border/80 bg-card/70 p-4">
+            <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              System agent
+            </div>
+            <div className="mt-3 text-[11px] text-muted-foreground">
+              The main agent is reserved and cannot be deleted.
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );

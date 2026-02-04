@@ -63,16 +63,13 @@ import {
   deleteGatewayAgent,
 } from "@/lib/gateway/agentConfig";
 import {
-  extractStudioSessionEntries,
+  buildAgentMainSessionKey,
   parseAgentIdFromSessionKey,
-  buildAgentStudioSessionKey,
   isSameSessionKey,
-  reconcileStudioSessionSelection,
 } from "@/lib/gateway/sessionKeys";
 import { buildAvatarDataUrl } from "@/lib/avatars/multiavatar";
 import { getStudioSettingsCoordinator } from "@/lib/studio/coordinator";
-import { resolveFocusedPreference, resolveStudioSessionId } from "@/lib/studio/settings";
-import { generateUUID } from "@/lib/gateway/openclaw/uuid";
+import { resolveFocusedPreference } from "@/lib/studio/settings";
 import { applySessionSettingMutation } from "@/features/agents/state/sessionSettingsMutations";
 import { buildNewSessionAgentPatch } from "@/features/agents/state/agentSessionActions";
 import { syncGatewaySessionSettings } from "@/lib/gateway/sessionSettings";
@@ -115,7 +112,16 @@ type SessionsListResult = {
 };
 
 type MobilePane = "fleet" | "chat" | "settings" | "brain";
+type DeleteAgentBlockPhase = "deleting" | "awaiting-restart";
+type DeleteAgentBlockState = {
+  agentId: string;
+  agentName: string;
+  phase: DeleteAgentBlockPhase;
+  startedAt: number;
+  sawDisconnect: boolean;
+};
 
+const RESERVED_MAIN_AGENT_ID = "main";
 const SPECIAL_UPDATE_HEARTBEAT_RE = /\bheartbeat\b/i;
 const SPECIAL_UPDATE_CRON_RE = /\bcron\b/i;
 
@@ -286,7 +292,7 @@ const AgentStudioPage = () => {
   const [cronRunBusyJobId, setCronRunBusyJobId] = useState<string | null>(null);
   const [cronDeleteBusyJobId, setCronDeleteBusyJobId] = useState<string | null>(null);
   const [brainPanelOpen, setBrainPanelOpen] = useState(false);
-  const studioSessionIdRef = useRef<string | null>(null);
+  const [deleteAgentBlock, setDeleteAgentBlock] = useState<DeleteAgentBlockState | null>(null);
   const thinkingDebugRef = useRef<Set<string>>(new Set());
   const chatRunSeenRef = useRef<Set<string>>(new Set());
   const specialUpdateRef = useRef<Map<string, string>>(new Map());
@@ -571,7 +577,8 @@ const AgentStudioPage = () => {
     setLoading(true);
     try {
       const agentsResult = await client.call<AgentsListResult>("agents.list", {});
-      const studioSessionsByAgent = await Promise.all(
+      const sessionKeysByAgent = new Map<string, Set<string>>();
+      await Promise.all(
         agentsResult.agents.map(async (agent) => {
           try {
             const sessions = await client.call<SessionsListResult>("sessions.list", {
@@ -581,35 +588,21 @@ const AgentStudioPage = () => {
               limit: 64,
             });
             const entries = Array.isArray(sessions.sessions) ? sessions.sessions : [];
-            return {
-              agentId: agent.id,
-              entries: extractStudioSessionEntries(agent.id, entries),
-            };
+            sessionKeysByAgent.set(
+              agent.id,
+              new Set(
+                entries
+                  .map((entry) => entry.key?.trim())
+                  .filter((key): key is string => Boolean(key))
+              )
+            );
           } catch (err) {
-            logger.error("Failed to list sessions while resolving studio session.", err);
-            return { agentId: agent.id, entries: [] };
+            logger.error("Failed to list sessions while resolving agent session.", err);
+            sessionKeysByAgent.set(agent.id, new Set());
           }
         })
       );
-      const sessionSelection = reconcileStudioSessionSelection({
-        studioSessionsByAgent,
-        persistedSessionId: studioSessionIdRef.current,
-        generatedSessionId: generateUUID(),
-      });
-      const sessionId = sessionSelection.sessionId;
-      studioSessionIdRef.current = sessionId;
-      if (sessionSelection.shouldPersistSession) {
-        const key = gatewayUrl.trim();
-        if (key) {
-          try {
-            await settingsCoordinator.applyPatchNow({
-              sessions: { [key]: sessionId },
-            });
-          } catch (err) {
-            logger.error("Failed to save studio session ID.", err);
-          }
-        }
-      }
+      const mainKey = agentsResult.mainKey?.trim() || "main";
       const seeds: AgentStoreSeed[] = agentsResult.agents.map((agent) => {
         const avatarSeed = agent.id;
         const avatarUrl = resolveAgentAvatarUrl(agent);
@@ -617,34 +610,20 @@ const AgentStudioPage = () => {
         return {
           agentId: agent.id,
           name,
-          sessionKey: buildAgentStudioSessionKey(agent.id, sessionId),
+          sessionKey: buildAgentMainSessionKey(agent.id, mainKey),
           avatarSeed,
           avatarUrl,
         };
       });
-      const existingSessions = new Set(sessionSelection.existingSessionKeys);
-      const staleStudioKeys = sessionSelection.staleStudioKeys;
-      if (staleStudioKeys.length > 0) {
-        await Promise.all(
-          staleStudioKeys.map(async (key) => {
-            try {
-              await client.call("sessions.delete", { key });
-            } catch (err) {
-              logger.error("Failed to prune duplicate studio session key.", err);
-            }
-          })
-        );
-      }
       hydrateAgents(seeds);
-      if (existingSessions.size > 0) {
-        for (const seed of seeds) {
-          if (!existingSessions.has(seed.sessionKey)) continue;
-          dispatch({
-            type: "updateAgent",
-            agentId: seed.agentId,
-            patch: { sessionCreated: true },
-          });
-        }
+      for (const seed of seeds) {
+        const existingSessions = sessionKeysByAgent.get(seed.agentId);
+        if (!existingSessions?.has(seed.sessionKey)) continue;
+        dispatch({
+          type: "updateAgent",
+          agentId: seed.agentId,
+          patch: { sessionCreated: true },
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to load agents.";
@@ -660,8 +639,6 @@ const AgentStudioPage = () => {
     resolveAgentName,
     setError,
     setLoading,
-    settingsCoordinator,
-    gatewayUrl,
     status,
   ]);
 
@@ -672,7 +649,6 @@ const AgentStudioPage = () => {
   useEffect(() => {
     let cancelled = false;
     const key = gatewayUrl.trim();
-    studioSessionIdRef.current = null;
     if (!key) {
       setFocusedPreferencesLoaded(true);
       return;
@@ -687,10 +663,6 @@ const AgentStudioPage = () => {
         }
         if (focusFilterTouchedRef.current) {
           return;
-        }
-        const persistedSessionId = resolveStudioSessionId(settings, key);
-        if (persistedSessionId) {
-          studioSessionIdRef.current = persistedSessionId;
         }
         const preference = resolveFocusedPreference(settings, key);
         if (preference) {
@@ -962,12 +934,24 @@ const AgentStudioPage = () => {
 
   const handleDeleteAgent = useCallback(
     async (agentId: string) => {
+      if (deleteAgentBlock) return;
+      if (agentId === RESERVED_MAIN_AGENT_ID) {
+        setError("The main agent cannot be deleted.");
+        return;
+      }
       const agent = agents.find((entry) => entry.agentId === agentId);
       if (!agent) return;
       const confirmed = window.confirm(
         `Delete ${agent.name}? This removes the agent from the gateway config.`
       );
       if (!confirmed) return;
+      setDeleteAgentBlock({
+        agentId,
+        agentName: agent.name,
+        phase: "deleting",
+        startedAt: Date.now(),
+        sawDisconnect: status !== "connected",
+      });
       try {
         await deleteGatewayAgent({
           client,
@@ -975,14 +959,63 @@ const AgentStudioPage = () => {
           sessionKey: agent.sessionKey,
         });
         setSettingsAgentId(null);
-        await loadAgents();
+        setDeleteAgentBlock((current) => {
+          if (!current || current.agentId !== agentId) return current;
+          return {
+            ...current,
+            phase: "awaiting-restart",
+            sawDisconnect: current.sawDisconnect || status !== "connected",
+          };
+        });
       } catch (err) {
         const msg = err instanceof Error ? err.message : "Failed to delete agent.";
+        setDeleteAgentBlock(null);
         setError(msg);
       }
     },
-    [agents, client, loadAgents, setError]
+    [agents, client, deleteAgentBlock, setError, status]
   );
+
+  useEffect(() => {
+    if (!deleteAgentBlock || deleteAgentBlock.phase !== "awaiting-restart") return;
+    if (status !== "connected") {
+      if (!deleteAgentBlock.sawDisconnect) {
+        setDeleteAgentBlock((current) => {
+          if (!current || current.phase !== "awaiting-restart" || current.sawDisconnect) {
+            return current;
+          }
+          return { ...current, sawDisconnect: true };
+        });
+      }
+      return;
+    }
+    if (!deleteAgentBlock.sawDisconnect) return;
+    let cancelled = false;
+    const finalize = async () => {
+      await loadAgents();
+      if (cancelled) return;
+      setDeleteAgentBlock(null);
+      setMobilePane("chat");
+    };
+    void finalize();
+    return () => {
+      cancelled = true;
+    };
+  }, [deleteAgentBlock, loadAgents, status]);
+
+  useEffect(() => {
+    if (!deleteAgentBlock) return;
+    const maxWaitMs = 90_000;
+    const elapsed = Date.now() - deleteAgentBlock.startedAt;
+    const remaining = Math.max(0, maxWaitMs - elapsed);
+    const timeoutId = window.setTimeout(() => {
+      setDeleteAgentBlock(null);
+      setError("Gateway restart timed out after deleting the agent.");
+    }, remaining);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [deleteAgentBlock, setError]);
 
   const handleRunCronJob = useCallback(
     async (agentId: string, jobId: string) => {
@@ -1063,10 +1096,14 @@ const AgentStudioPage = () => {
         return;
       }
       try {
-        const sessionId = generateUUID().trim();
-        const patch = buildNewSessionAgentPatch(agent, sessionId);
+        const sessionKey = agent.sessionKey.trim();
+        if (!sessionKey) {
+          throw new Error("Missing session key for agent.");
+        }
+        await client.call("sessions.reset", { key: sessionKey });
+        const patch = buildNewSessionAgentPatch(agent);
         clearRunTracking(agent.runId);
-        historyInFlightRef.current.delete(agent.sessionKey);
+        historyInFlightRef.current.delete(sessionKey);
         specialUpdateRef.current.delete(agentId);
         specialUpdateInFlightRef.current.delete(agentId);
         dispatch({
@@ -1086,7 +1123,7 @@ const AgentStudioPage = () => {
         });
       }
     },
-    [agents, clearRunTracking, dispatch, setError]
+    [agents, clearRunTracking, client, dispatch, setError]
   );
 
   useEffect(() => {
@@ -1651,6 +1688,15 @@ const AgentStudioPage = () => {
   const connectionPanelVisible = showConnectionPanel;
   const hasAnyAgents = agents.length > 0;
   const showFleetLayout = hasAnyAgents || status === "connected";
+  const deleteBlockStatusLine = deleteAgentBlock
+    ? deleteAgentBlock.phase === "deleting"
+      ? "Submitting config change"
+      : !deleteAgentBlock.sawDisconnect
+        ? "Waiting for gateway to restart"
+        : status === "connected"
+          ? "Gateway is back online, syncing agents"
+          : "Gateway restart in progress"
+    : null;
 
   return (
     <div className="relative min-h-screen w-screen overflow-hidden bg-background">
@@ -1843,6 +1889,7 @@ const AgentStudioPage = () => {
                   onRename={(name) => handleRenameAgent(settingsAgent.agentId, name)}
                   onNewSession={() => handleNewSession(settingsAgent.agentId)}
                   onDelete={() => handleDeleteAgent(settingsAgent.agentId)}
+                  canDelete={settingsAgent.agentId !== RESERVED_MAIN_AGENT_ID}
                   onToolCallingToggle={(enabled) =>
                     handleToolCallingToggle(settingsAgent.agentId, enabled)
                   }
@@ -1873,6 +1920,32 @@ const AgentStudioPage = () => {
           </div>
         )}
       </div>
+      {deleteAgentBlock ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/70 backdrop-blur-sm"
+          data-testid="agent-delete-restart-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Deleting agent and restarting gateway"
+        >
+          <div className="w-full max-w-md rounded-lg border border-border bg-card/95 p-6 shadow-2xl">
+            <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Agent delete in progress
+            </div>
+            <div className="mt-2 text-base font-semibold text-foreground">
+              {deleteAgentBlock.agentName}
+            </div>
+            <div className="mt-3 text-sm text-muted-foreground">
+              Studio is temporarily locked until the gateway restarts.
+            </div>
+            {deleteBlockStatusLine ? (
+              <div className="mt-4 rounded-md border border-border/70 bg-muted/40 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-foreground">
+                {deleteBlockStatusLine}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

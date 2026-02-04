@@ -1,16 +1,8 @@
 import type { AgentState } from "@/features/agents/state/store";
-import { buildAgentStudioSessionKey } from "@/lib/gateway/sessionKeys";
 
-export const buildNewSessionAgentPatch = (
-  agent: AgentState,
-  sessionId: string
-): Partial<AgentState> => {
-  const trimmedSessionId = sessionId.trim();
-  if (!trimmedSessionId) {
-    throw new Error("Session id is required.");
-  }
+export const buildNewSessionAgentPatch = (agent: AgentState): Partial<AgentState> => {
   return {
-    sessionKey: buildAgentStudioSessionKey(agent.agentId, trimmedSessionId),
+    sessionKey: agent.sessionKey,
     status: "idle",
     runId: null,
     streamText: null,
@@ -28,7 +20,7 @@ export const buildNewSessionAgentPatch = (
     historyLoadedAt: null,
     awaitingUserInput: false,
     hasUnseenActivity: false,
-    sessionCreated: false,
-    sessionSettingsSynced: false,
+    sessionCreated: true,
+    sessionSettingsSynced: true,
   };
 };
