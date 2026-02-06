@@ -64,17 +64,15 @@ import {
   runCronJobNow,
 } from "@/lib/cron/gateway";
 import { filterCronJobsForAgent, resolveLatestCronJobForAgent } from "@/lib/cron/types";
-import {
-  listHeartbeatsForAgent,
-  triggerHeartbeatNow,
-  type AgentHeartbeatSummary,
-} from "@/lib/heartbeat/gateway";
 import { logger } from "@/lib/logger";
 import {
   createGatewayAgent,
   renameGatewayAgent,
   deleteGatewayAgent,
   removeGatewayHeartbeatOverride,
+  listHeartbeatsForAgent,
+  triggerHeartbeatNow,
+  type AgentHeartbeatSummary,
 } from "@/lib/gateway/agentConfig";
 import {
   buildAgentMainSessionKey,

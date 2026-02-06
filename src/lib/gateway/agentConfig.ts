@@ -6,11 +6,43 @@ import {
   type ConfigAgentEntry,
 } from "@/lib/agents/configList";
 import { slugifyName } from "@/lib/ids/slugify";
-import type {
-  AgentHeartbeat,
-  AgentHeartbeatResult,
-  AgentHeartbeatUpdatePayload,
-} from "@/lib/heartbeat/gateway";
+
+export type AgentHeartbeatActiveHours = {
+  start: string;
+  end: string;
+};
+
+export type AgentHeartbeat = {
+  every: string;
+  target: string;
+  includeReasoning: boolean;
+  ackMaxChars?: number | null;
+  activeHours?: AgentHeartbeatActiveHours | null;
+};
+
+export type AgentHeartbeatResult = {
+  heartbeat: AgentHeartbeat;
+  hasOverride: boolean;
+};
+
+export type AgentHeartbeatUpdatePayload = {
+  override: boolean;
+  heartbeat: AgentHeartbeat;
+};
+
+export type AgentHeartbeatSummary = {
+  id: string;
+  agentId: string;
+  source: "override" | "default";
+  enabled: boolean;
+  heartbeat: AgentHeartbeat;
+};
+
+export type HeartbeatListResult = {
+  heartbeats: AgentHeartbeatSummary[];
+};
+
+export type HeartbeatWakeResult = { ok: true } | { ok: false };
 
 export type GatewayConfigSnapshot = {
   config?: Record<string, unknown>;
@@ -112,6 +144,82 @@ export const resolveHeartbeatSettings = (
       ? ((entry as Record<string, unknown>).heartbeat as HeartbeatBlock)
       : null;
   return normalizeHeartbeat(defaults, override);
+};
+
+type GatewayStatusHeartbeatAgent = {
+  agentId?: string;
+  enabled?: boolean;
+  every?: string;
+  everyMs?: number | null;
+};
+
+type GatewayStatusSnapshot = {
+  heartbeat?: {
+    agents?: GatewayStatusHeartbeatAgent[];
+  };
+};
+
+const resolveHeartbeatAgentId = (agentId: string) => {
+  const trimmed = agentId.trim();
+  if (!trimmed) {
+    throw new Error("Agent id is required.");
+  }
+  return trimmed;
+};
+
+const resolveStatusHeartbeatAgent = (
+  status: GatewayStatusSnapshot,
+  agentId: string
+): GatewayStatusHeartbeatAgent | null => {
+  const list = Array.isArray(status.heartbeat?.agents) ? status.heartbeat?.agents : [];
+  for (const entry of list) {
+    if (!entry || typeof entry.agentId !== "string") continue;
+    if (entry.agentId.trim() !== agentId) continue;
+    return entry;
+  }
+  return null;
+};
+
+export const listHeartbeatsForAgent = async (
+  client: GatewayClient,
+  agentId: string
+): Promise<HeartbeatListResult> => {
+  const resolvedAgentId = resolveHeartbeatAgentId(agentId);
+  const [snapshot, status] = await Promise.all([
+    client.call<GatewayConfigSnapshot>("config.get", {}),
+    client.call<GatewayStatusSnapshot>("status", {}),
+  ]);
+  const config = isRecord(snapshot.config) ? snapshot.config : {};
+  const resolved = resolveHeartbeatSettings(config, resolvedAgentId);
+  const statusHeartbeat = resolveStatusHeartbeatAgent(status, resolvedAgentId);
+  const enabled = Boolean(statusHeartbeat?.enabled);
+  const every = typeof statusHeartbeat?.every === "string" ? statusHeartbeat.every.trim() : "";
+  const heartbeat = every ? { ...resolved.heartbeat, every } : resolved.heartbeat;
+  if (!enabled && !resolved.hasOverride) {
+    return { heartbeats: [] };
+  }
+  return {
+    heartbeats: [
+      {
+        id: resolvedAgentId,
+        agentId: resolvedAgentId,
+        source: resolved.hasOverride ? "override" : "default",
+        enabled,
+        heartbeat,
+      },
+    ],
+  };
+};
+
+export const triggerHeartbeatNow = async (
+  client: GatewayClient,
+  agentId: string
+): Promise<HeartbeatWakeResult> => {
+  const resolvedAgentId = resolveHeartbeatAgentId(agentId);
+  return client.call<HeartbeatWakeResult>("wake", {
+    mode: "now",
+    text: `OpenClaw Studio heartbeat trigger (${resolvedAgentId}).`,
+  });
 };
 
 const shouldRetryConfigPatch = (err: unknown) => {

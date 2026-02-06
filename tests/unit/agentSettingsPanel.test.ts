@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type { AgentState } from "@/features/agents/state/store";
 import { AgentSettingsPanel } from "@/features/agents/components/AgentInspectPanels";
 import type { CronJobSummary } from "@/lib/cron/types";
-import type { AgentHeartbeatSummary } from "@/lib/heartbeat/gateway";
+import type { AgentHeartbeatSummary } from "@/lib/gateway/agentConfig";
 
 const createAgent = (): AgentState => ({
   agentId: "agent-1",

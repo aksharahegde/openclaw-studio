@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   listHeartbeatsForAgent,
   triggerHeartbeatNow,
-} from "@/lib/heartbeat/gateway";
+} from "@/lib/gateway/agentConfig";
 import type { GatewayClient } from "@/lib/gateway/GatewayClient";
 
 describe("heartbeat gateway client", () => {

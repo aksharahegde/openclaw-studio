@@ -9,7 +9,7 @@ import type { AgentState } from "@/features/agents/state/store";
 import { useAgentFilesEditor } from "@/features/agents/state/useAgentFilesEditor";
 import type { CronJobSummary } from "@/lib/cron/types";
 import type { GatewayClient } from "@/lib/gateway/GatewayClient";
-import type { AgentHeartbeatSummary } from "@/lib/heartbeat/gateway";
+import type { AgentHeartbeatSummary } from "@/lib/gateway/agentConfig";
 import {
   AGENT_FILE_META,
   AGENT_FILE_NAMES,
@@ -623,4 +623,3 @@ export const AgentBrainPanel = ({
     </div>
   );
 };
-
