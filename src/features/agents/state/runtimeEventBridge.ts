@@ -224,6 +224,12 @@ export const buildHistoryLines = (messages: ChatHistoryMessage[]): HistoryLinesR
       role === "assistant" ? formatThinkingMarkdown(extractThinking(message) ?? "") : "";
     const toolLines = extractToolLines(message);
     if (!text && !thinking && toolLines.length === 0) continue;
+    if (role === "system") {
+      if (toolLines.length > 0) {
+        lines.push(...toolLines);
+      }
+      continue;
+    }
     if (role === "user") {
       if (text && isHeartbeatPrompt(text)) continue;
       if (text) {

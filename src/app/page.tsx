@@ -1701,7 +1701,7 @@ const AgentStudioPage = () => {
             },
           });
         }
-        if (role === "user") {
+        if (role === "user" || role === "system") {
           return;
         }
         dispatch({
