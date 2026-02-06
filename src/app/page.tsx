@@ -133,6 +133,22 @@ type DeleteAgentBlockState = {
   startedAt: number;
   sawDisconnect: boolean;
 };
+type CreateAgentBlockPhase = "queued" | "creating" | "awaiting-restart";
+type CreateAgentBlockState = {
+  agentId: string | null;
+  agentName: string;
+  phase: CreateAgentBlockPhase;
+  startedAt: number;
+  sawDisconnect: boolean;
+};
+type RenameAgentBlockPhase = "queued" | "renaming" | "awaiting-restart";
+type RenameAgentBlockState = {
+  agentId: string;
+  agentName: string;
+  phase: RenameAgentBlockPhase;
+  startedAt: number;
+  sawDisconnect: boolean;
+};
 type ConfigMutationKind = "create-agent" | "rename-agent" | "delete-agent";
 type QueuedConfigMutation = {
   id: string;
@@ -302,6 +318,8 @@ const AgentStudioPage = () => {
   const [heartbeatDeleteBusyId, setHeartbeatDeleteBusyId] = useState<string | null>(null);
   const [brainPanelOpen, setBrainPanelOpen] = useState(false);
   const [deleteAgentBlock, setDeleteAgentBlock] = useState<DeleteAgentBlockState | null>(null);
+  const [createAgentBlock, setCreateAgentBlock] = useState<CreateAgentBlockState | null>(null);
+  const [renameAgentBlock, setRenameAgentBlock] = useState<RenameAgentBlockState | null>(null);
   const [queuedConfigMutations, setQueuedConfigMutations] = useState<QueuedConfigMutation[]>([]);
   const [activeConfigMutation, setActiveConfigMutation] = useState<QueuedConfigMutation | null>(
     null
@@ -710,22 +728,26 @@ const AgentStudioPage = () => {
     stateRef.current = state;
   }, [state]);
 
-  useEffect(() => {
-    if (status !== "connected") return;
-    if (activeConfigMutation) return;
-    if (deleteAgentBlock && deleteAgentBlock.phase !== "queued") return;
-    if (hasRunningAgents) return;
-    const next = queuedConfigMutations[0];
-    if (!next) return;
-    setQueuedConfigMutations((current) => current.slice(1));
-    setActiveConfigMutation(next);
-  }, [
-    activeConfigMutation,
-    deleteAgentBlock,
-    hasRunningAgents,
-    queuedConfigMutations,
-    status,
-  ]);
+	  useEffect(() => {
+	    if (status !== "connected") return;
+	    if (activeConfigMutation) return;
+	    if (deleteAgentBlock && deleteAgentBlock.phase !== "queued") return;
+	    if (createAgentBlock && createAgentBlock.phase !== "queued") return;
+	    if (renameAgentBlock && renameAgentBlock.phase !== "queued") return;
+	    if (hasRunningAgents) return;
+	    const next = queuedConfigMutations[0];
+	    if (!next) return;
+	    setQueuedConfigMutations((current) => current.slice(1));
+	    setActiveConfigMutation(next);
+	  }, [
+	    activeConfigMutation,
+	    createAgentBlock,
+	    deleteAgentBlock,
+	    renameAgentBlock,
+	    hasRunningAgents,
+	    queuedConfigMutations,
+	    status,
+	  ]);
 
   useEffect(() => {
     if (!activeConfigMutation) return;
@@ -1043,6 +1065,8 @@ const AgentStudioPage = () => {
   const handleDeleteAgent = useCallback(
     async (agentId: string) => {
       if (deleteAgentBlock) return;
+      if (createAgentBlock) return;
+      if (renameAgentBlock) return;
       if (agentId === RESERVED_MAIN_AGENT_ID) {
         setError("The main agent cannot be deleted.");
         return;
@@ -1095,7 +1119,15 @@ const AgentStudioPage = () => {
         setError(msg);
       }
     },
-    [agents, client, deleteAgentBlock, enqueueConfigMutation, setError]
+    [
+      agents,
+      client,
+      createAgentBlock,
+      deleteAgentBlock,
+      enqueueConfigMutation,
+      renameAgentBlock,
+      setError,
+    ]
   );
 
   useEffect(() => {
@@ -1243,6 +1275,9 @@ const AgentStudioPage = () => {
 
   const handleCreateAgent = useCallback(async () => {
     if (createAgentBusy) return;
+    if (createAgentBlock) return;
+    if (deleteAgentBlock) return;
+    if (renameAgentBlock) return;
     if (status !== "connected") {
       setError("Connect to gateway before creating an agent.");
       return;
@@ -1250,21 +1285,41 @@ const AgentStudioPage = () => {
     setCreateAgentBusy(true);
     try {
       const name = resolveNextNewAgentName(stateRef.current.agents);
+      setCreateAgentBlock({
+        agentId: null,
+        agentName: name,
+        phase: "queued",
+        startedAt: Date.now(),
+        sawDisconnect: false,
+      });
       await enqueueConfigMutation({
         kind: "create-agent",
         label: `Create ${name}`,
         run: async () => {
+          setCreateAgentBlock((current) => {
+            if (!current || current.agentName !== name) return current;
+            return { ...current, phase: "creating" };
+          });
           const created = await createGatewayAgent({ client, name });
-          await loadAgents();
           focusFilterTouchedRef.current = true;
           setFocusFilter("all");
           dispatch({ type: "selectAgent", agentId: created.id });
           setSettingsAgentId(null);
           setMobilePane("chat");
+          setCreateAgentBlock((current) => {
+            if (!current || current.agentName !== name) return current;
+            return {
+              ...current,
+              agentId: created.id,
+              phase: "awaiting-restart",
+              sawDisconnect: false,
+            };
+          });
         },
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Failed to create agent.";
+      setCreateAgentBlock(null);
       setError(message);
     } finally {
       setCreateAgentBusy(false);
@@ -1272,12 +1327,98 @@ const AgentStudioPage = () => {
   }, [
     client,
     createAgentBusy,
+    createAgentBlock,
+    deleteAgentBlock,
+    renameAgentBlock,
     dispatch,
     enqueueConfigMutation,
-    loadAgents,
     setError,
     status,
   ]);
+
+  useEffect(() => {
+    if (!createAgentBlock || createAgentBlock.phase !== "awaiting-restart") return;
+    if (status !== "connected") {
+      if (!createAgentBlock.sawDisconnect) {
+        setCreateAgentBlock((current) => {
+          if (!current || current.phase !== "awaiting-restart" || current.sawDisconnect) {
+            return current;
+          }
+          return { ...current, sawDisconnect: true };
+        });
+      }
+      return;
+    }
+    if (!createAgentBlock.sawDisconnect) return;
+    let cancelled = false;
+    const finalize = async () => {
+      await loadAgents();
+      if (cancelled) return;
+      setCreateAgentBlock(null);
+      setMobilePane("chat");
+    };
+    void finalize();
+    return () => {
+      cancelled = true;
+    };
+  }, [createAgentBlock, loadAgents, status]);
+
+  useEffect(() => {
+    if (!createAgentBlock) return;
+    if (createAgentBlock.phase === "queued") return;
+    const maxWaitMs = 90_000;
+    const elapsed = Date.now() - createAgentBlock.startedAt;
+    const remaining = Math.max(0, maxWaitMs - elapsed);
+    const timeoutId = window.setTimeout(() => {
+      setCreateAgentBlock(null);
+      setError("Gateway restart timed out after creating the agent.");
+    }, remaining);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [createAgentBlock, setError]);
+
+  useEffect(() => {
+    if (!renameAgentBlock || renameAgentBlock.phase !== "awaiting-restart") return;
+    if (status !== "connected") {
+      if (!renameAgentBlock.sawDisconnect) {
+        setRenameAgentBlock((current) => {
+          if (!current || current.phase !== "awaiting-restart" || current.sawDisconnect) {
+            return current;
+          }
+          return { ...current, sawDisconnect: true };
+        });
+      }
+      return;
+    }
+    if (!renameAgentBlock.sawDisconnect) return;
+    let cancelled = false;
+    const finalize = async () => {
+      await loadAgents();
+      if (cancelled) return;
+      setRenameAgentBlock(null);
+      setMobilePane("chat");
+    };
+    void finalize();
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAgents, renameAgentBlock, status]);
+
+  useEffect(() => {
+    if (!renameAgentBlock) return;
+    if (renameAgentBlock.phase === "queued") return;
+    const maxWaitMs = 90_000;
+    const elapsed = Date.now() - renameAgentBlock.startedAt;
+    const remaining = Math.max(0, maxWaitMs - elapsed);
+    const timeoutId = window.setTimeout(() => {
+      setRenameAgentBlock(null);
+      setError("Gateway restart timed out after renaming the agent.");
+    }, remaining);
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [renameAgentBlock, setError]);
 
   const handleNewSession = useCallback(
     async (agentId: string) => {
@@ -1894,13 +2035,27 @@ const AgentStudioPage = () => {
 
   const handleRenameAgent = useCallback(
     async (agentId: string, name: string) => {
+      if (deleteAgentBlock) return false;
+      if (createAgentBlock) return false;
+      if (renameAgentBlock) return false;
       const agent = agents.find((entry) => entry.agentId === agentId);
       if (!agent) return false;
       try {
+        setRenameAgentBlock({
+          agentId,
+          agentName: name,
+          phase: "queued",
+          startedAt: Date.now(),
+          sawDisconnect: false,
+        });
         await enqueueConfigMutation({
           kind: "rename-agent",
           label: `Rename ${agent.name}`,
           run: async () => {
+            setRenameAgentBlock((current) => {
+              if (!current || current.agentId !== agentId) return current;
+              return { ...current, phase: "renaming" };
+            });
             await renameGatewayAgent({
               client,
               agentId,
@@ -1912,16 +2067,34 @@ const AgentStudioPage = () => {
               agentId,
               patch: { name },
             });
+            setRenameAgentBlock((current) => {
+              if (!current || current.agentId !== agentId) return current;
+              return {
+                ...current,
+                phase: "awaiting-restart",
+                sawDisconnect: false,
+              };
+            });
           },
         });
         return true;
       } catch (err) {
         const message = err instanceof Error ? err.message : "Failed to rename agent.";
+        setRenameAgentBlock(null);
         setError(message);
         return false;
       }
     },
-    [agents, client, dispatch, enqueueConfigMutation, setError]
+    [
+      agents,
+      client,
+      createAgentBlock,
+      deleteAgentBlock,
+      dispatch,
+      enqueueConfigMutation,
+      renameAgentBlock,
+      setError,
+    ]
   );
 
   const handleAvatarShuffle = useCallback(
@@ -1959,6 +2132,28 @@ const AgentStudioPage = () => {
           ? `Queued ${queuedConfigMutationCount} config change${queuedConfigMutationCount === 1 ? "" : "s"}; waiting for gateway connection`
           : `Queued ${queuedConfigMutationCount} config change${queuedConfigMutationCount === 1 ? "" : "s"}`
       : null;
+  const createBlockStatusLine = createAgentBlock
+    ? createAgentBlock.phase === "queued"
+      ? "Waiting for active runs to finish"
+      : createAgentBlock.phase === "creating"
+      ? "Submitting config change"
+      : !createAgentBlock.sawDisconnect
+        ? "Waiting for gateway to restart"
+        : status === "connected"
+          ? "Gateway is back online, syncing agents"
+          : "Gateway restart in progress"
+    : null;
+  const renameBlockStatusLine = renameAgentBlock
+    ? renameAgentBlock.phase === "queued"
+      ? "Waiting for active runs to finish"
+      : renameAgentBlock.phase === "renaming"
+      ? "Submitting config change"
+      : !renameAgentBlock.sawDisconnect
+        ? "Waiting for gateway to restart"
+        : status === "connected"
+          ? "Gateway is back online, syncing agents"
+          : "Gateway restart in progress"
+    : null;
   const deleteBlockStatusLine = deleteAgentBlock
     ? deleteAgentBlock.phase === "queued"
       ? "Waiting for active runs to finish"
@@ -2213,8 +2408,60 @@ const AgentStudioPage = () => {
               className="items-center px-6 py-10 text-center"
             />
           </div>
-        )}
-      </div>
+	        )}
+	      </div>
+      {createAgentBlock && createAgentBlock.phase !== "queued" ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/70 backdrop-blur-sm"
+          data-testid="agent-create-restart-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Creating agent and restarting gateway"
+        >
+          <div className="w-full max-w-md rounded-lg border border-border bg-card/95 p-6 shadow-2xl">
+            <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Agent create in progress
+            </div>
+            <div className="mt-2 text-base font-semibold text-foreground">
+              {createAgentBlock.agentName}
+            </div>
+            <div className="mt-3 text-sm text-muted-foreground">
+              Studio is temporarily locked until the gateway restarts.
+            </div>
+            {createBlockStatusLine ? (
+              <div className="mt-4 rounded-md border border-border/70 bg-muted/40 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-foreground">
+                {createBlockStatusLine}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {renameAgentBlock && renameAgentBlock.phase !== "queued" ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-background/70 backdrop-blur-sm"
+          data-testid="agent-rename-restart-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Renaming agent and restarting gateway"
+        >
+          <div className="w-full max-w-md rounded-lg border border-border bg-card/95 p-6 shadow-2xl">
+            <div className="font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+              Agent rename in progress
+            </div>
+            <div className="mt-2 text-base font-semibold text-foreground">
+              {renameAgentBlock.agentName}
+            </div>
+            <div className="mt-3 text-sm text-muted-foreground">
+              Studio is temporarily locked until the gateway restarts.
+            </div>
+            {renameBlockStatusLine ? (
+              <div className="mt-4 rounded-md border border-border/70 bg-muted/40 px-3 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-foreground">
+                {renameBlockStatusLine}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
       {deleteAgentBlock && deleteAgentBlock.phase !== "queued" ? (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/70 backdrop-blur-sm"
