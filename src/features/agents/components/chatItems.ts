@@ -1,16 +1,23 @@
 import {
   formatThinkingMarkdown,
   isToolMarkdown,
+  isMetaMarkdown,
   isTraceMarkdown,
   parseToolMarkdown,
+  parseMetaMarkdown,
   stripTraceMarkdown,
 } from "@/lib/text/message-extract";
 
+type ItemMeta = {
+  timestampMs: number;
+  thinkingDurationMs?: number;
+};
+
 export type AgentChatItem =
-  | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string; live?: boolean }
-  | { kind: "tool"; text: string }
-  | { kind: "thinking"; text: string; live?: boolean };
+  | { kind: "user"; text: string; timestampMs?: number }
+  | { kind: "assistant"; text: string; live?: boolean; timestampMs?: number; thinkingDurationMs?: number }
+  | { kind: "tool"; text: string; timestampMs?: number }
+  | { kind: "thinking"; text: string; live?: boolean; timestampMs?: number; thinkingDurationMs?: number };
 
 export type BuildAgentChatItemsInput = {
   outputLines: string[];
@@ -53,12 +60,17 @@ export const buildFinalAgentChatItems = ({
   "outputLines" | "showThinkingTraces" | "toolCallingEnabled"
 >): AgentChatItem[] => {
   const items: AgentChatItem[] = [];
+  let currentMeta: ItemMeta | null = null;
   const appendThinking = (text: string) => {
     const normalized = text.trim();
     if (!normalized) return;
     const previous = items[items.length - 1];
     if (!previous || previous.kind !== "thinking") {
-      items.push({ kind: "thinking", text: normalized });
+      items.push({
+        kind: "thinking",
+        text: normalized,
+        ...(currentMeta ? { timestampMs: currentMeta.timestampMs, thinkingDurationMs: currentMeta.thinkingDurationMs } : {}),
+      });
       return;
     }
     if (previous.text === normalized) {
@@ -76,6 +88,16 @@ export const buildFinalAgentChatItems = ({
 
   for (const line of outputLines) {
     if (!line) continue;
+    if (isMetaMarkdown(line)) {
+      const parsed = parseMetaMarkdown(line);
+      if (parsed) {
+        currentMeta = {
+          timestampMs: parsed.timestamp,
+          ...(typeof parsed.thinkingDurationMs === "number" ? { thinkingDurationMs: parsed.thinkingDurationMs } : {}),
+        };
+      }
+      continue;
+    }
     if (isTraceMarkdown(line)) {
       if (!showThinkingTraces) continue;
       const text = stripTraceMarkdown(line).trim();
@@ -85,18 +107,32 @@ export const buildFinalAgentChatItems = ({
     }
     if (isToolMarkdown(line)) {
       if (!toolCallingEnabled) continue;
-      items.push({ kind: "tool", text: line });
+      items.push({
+        kind: "tool",
+        text: line,
+        ...(currentMeta ? { timestampMs: currentMeta.timestampMs } : {}),
+      });
       continue;
     }
     const trimmed = line.trim();
     if (trimmed.startsWith(">")) {
       const text = trimmed.replace(/^>\s?/, "").trim();
-      if (text) items.push({ kind: "user", text });
+      if (text) {
+        items.push({
+          kind: "user",
+          text,
+          ...(currentMeta ? { timestampMs: currentMeta.timestampMs } : {}),
+        });
+      }
       continue;
     }
     const normalizedAssistant = normalizeAssistantDisplayText(line);
     if (!normalizedAssistant) continue;
-    items.push({ kind: "assistant", text: normalizedAssistant });
+    items.push({
+      kind: "assistant",
+      text: normalizedAssistant,
+      ...(currentMeta ? { timestampMs: currentMeta.timestampMs, thinkingDurationMs: currentMeta.thinkingDurationMs } : {}),
+    });
   }
 
   return items;
@@ -110,12 +146,18 @@ export const buildAgentChatItems = ({
   toolCallingEnabled,
 }: BuildAgentChatItemsInput): AgentChatItem[] => {
   const items: AgentChatItem[] = [];
+  let currentMeta: ItemMeta | null = null;
   const appendThinking = (text: string, live?: boolean) => {
     const normalized = text.trim();
     if (!normalized) return;
     const previous = items[items.length - 1];
     if (!previous || previous.kind !== "thinking") {
-      items.push({ kind: "thinking", text: normalized, live });
+      items.push({
+        kind: "thinking",
+        text: normalized,
+        live,
+        ...(currentMeta ? { timestampMs: currentMeta.timestampMs, thinkingDurationMs: currentMeta.thinkingDurationMs } : {}),
+      });
       return;
     }
     if (previous.text === normalized) {
@@ -137,6 +179,16 @@ export const buildAgentChatItems = ({
 
   for (const line of outputLines) {
     if (!line) continue;
+    if (isMetaMarkdown(line)) {
+      const parsed = parseMetaMarkdown(line);
+      if (parsed) {
+        currentMeta = {
+          timestampMs: parsed.timestamp,
+          ...(typeof parsed.thinkingDurationMs === "number" ? { thinkingDurationMs: parsed.thinkingDurationMs } : {}),
+        };
+      }
+      continue;
+    }
     if (isTraceMarkdown(line)) {
       if (!showThinkingTraces) continue;
       const text = stripTraceMarkdown(line).trim();
@@ -146,18 +198,32 @@ export const buildAgentChatItems = ({
     }
     if (isToolMarkdown(line)) {
       if (!toolCallingEnabled) continue;
-      items.push({ kind: "tool", text: line });
+      items.push({
+        kind: "tool",
+        text: line,
+        ...(currentMeta ? { timestampMs: currentMeta.timestampMs } : {}),
+      });
       continue;
     }
     const trimmed = line.trim();
     if (trimmed.startsWith(">")) {
       const text = trimmed.replace(/^>\s?/, "").trim();
-      if (text) items.push({ kind: "user", text });
+      if (text) {
+        items.push({
+          kind: "user",
+          text,
+          ...(currentMeta ? { timestampMs: currentMeta.timestampMs } : {}),
+        });
+      }
       continue;
     }
     const normalizedAssistant = normalizeAssistantDisplayText(line);
     if (!normalizedAssistant) continue;
-    items.push({ kind: "assistant", text: normalizedAssistant });
+    items.push({
+      kind: "assistant",
+      text: normalizedAssistant,
+      ...(currentMeta ? { timestampMs: currentMeta.timestampMs, thinkingDurationMs: currentMeta.thinkingDurationMs } : {}),
+    });
   }
 
   if (showThinkingTraces) {

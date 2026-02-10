@@ -15,6 +15,7 @@ const createAgent = (overrides?: Partial<AgentState>): AgentState => ({
   lastResult: null,
   lastDiff: null,
   runId: null,
+  runStartedAt: null,
   streamText: null,
   thinkingTrace: null,
   latestOverride: null,
@@ -159,7 +160,7 @@ describe("sendChatMessageViaStudio", () => {
     expect(dispatch).toHaveBeenCalledWith({
       type: "updateAgent",
       agentId: agent.agentId,
-      patch: { status: "error", runId: null, streamText: null, thinkingTrace: null },
+      patch: { status: "error", runId: null, runStartedAt: null, streamText: null, thinkingTrace: null },
     });
     expect(dispatch).toHaveBeenCalledWith({
       type: "appendOutput",
@@ -168,4 +169,3 @@ describe("sendChatMessageViaStudio", () => {
     });
   });
 });
-

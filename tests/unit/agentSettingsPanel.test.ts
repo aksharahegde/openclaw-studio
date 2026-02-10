@@ -18,6 +18,7 @@ const createAgent = (): AgentState => ({
   lastResult: null,
   lastDiff: null,
   runId: null,
+  runStartedAt: null,
   streamText: null,
   thinkingTrace: null,
   latestOverride: null,

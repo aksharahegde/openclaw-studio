@@ -18,6 +18,7 @@ import {
   extractThinking,
   extractThinkingFromTaggedStream,
   extractToolLines,
+  formatMetaMarkdown,
   formatThinkingMarkdown,
   formatToolCallMarkdown,
   isTraceMarkdown,
@@ -143,6 +144,7 @@ export function createGatewayRuntimeEventHandler(
   const chatRunSeen = new Set<string>();
   const assistantStreamByRun = new Map<string, string>();
   const thinkingStreamByRun = new Map<string, string>();
+  const thinkingStartedAtByRun = new Map<string, number>();
   const toolLinesSeenByRun = new Map<string, Set<string>>();
   const thinkingDebugBySession = new Set<string>();
   const lastActivityMarkByAgent = new Map<string, number>();
@@ -170,6 +172,7 @@ export function createGatewayRuntimeEventHandler(
     chatRunSeen.delete(runId);
     assistantStreamByRun.delete(runId);
     thinkingStreamByRun.delete(runId);
+    thinkingStartedAtByRun.delete(runId);
     toolLinesSeenByRun.delete(runId);
   };
 
@@ -243,12 +246,18 @@ export function createGatewayRuntimeEventHandler(
       appendUniqueToolLines(agentId, payload.runId ?? null, toolLines);
       const patch: Partial<AgentState> = {};
       if (nextThinking) {
+        if (payload.runId && !thinkingStartedAtByRun.has(payload.runId)) {
+          thinkingStartedAtByRun.set(payload.runId, now());
+        }
         patch.thinkingTrace = nextThinking;
         patch.status = "running";
       }
       if (typeof nextText === "string") {
         patch.streamText = nextText;
         patch.status = "running";
+      }
+      if (agent && agent.runStartedAt === null) {
+        patch.runStartedAt = now();
       }
       if (Object.keys(patch).length > 0) {
         deps.queueLivePatch(agentId, patch);
@@ -267,6 +276,30 @@ export function createGatewayRuntimeEventHandler(
       }
       const thinkingText = nextThinking ?? agent?.thinkingTrace ?? null;
       const thinkingLine = thinkingText ? formatThinkingMarkdown(thinkingText) : "";
+      const assistantCompletionAt = resolveAssistantCompletionTimestamp({
+        role,
+        state: payload.state,
+        message: payload.message,
+        now: now(),
+      });
+      if (role === "assistant") {
+        const startedAt = payload.runId ? thinkingStartedAtByRun.get(payload.runId) : undefined;
+        const thinkingDurationMs =
+          typeof startedAt === "number" && typeof assistantCompletionAt === "number"
+            ? Math.max(0, assistantCompletionAt - startedAt)
+            : null;
+        if (typeof assistantCompletionAt === "number") {
+          deps.dispatch({
+            type: "appendOutput",
+            agentId,
+            line: formatMetaMarkdown({
+              role: "assistant",
+              timestamp: assistantCompletionAt,
+              thinkingDurationMs,
+            }),
+          });
+        }
+      }
       if (thinkingLine) {
         deps.dispatch({
           type: "appendOutput",
@@ -298,18 +331,13 @@ export function createGatewayRuntimeEventHandler(
       if (agent?.lastUserMessage && !agent.latestOverride) {
         void deps.updateSpecialLatestUpdate(agentId, agent, agent.lastUserMessage);
       }
-      const assistantCompletionAt = resolveAssistantCompletionTimestamp({
-        role,
-        state: payload.state,
-        message: payload.message,
-        now: now(),
-      });
       deps.dispatch({
         type: "updateAgent",
         agentId,
         patch: {
           streamText: null,
           thinkingTrace: null,
+          runStartedAt: null,
           ...(typeof assistantCompletionAt === "number"
             ? { lastAssistantMessageAt: assistantCompletionAt }
             : {}),
@@ -328,7 +356,7 @@ export function createGatewayRuntimeEventHandler(
       deps.dispatch({
         type: "updateAgent",
         agentId,
-        patch: { streamText: null, thinkingTrace: null },
+        patch: { streamText: null, thinkingTrace: null, runStartedAt: null },
       });
       return;
     }
@@ -343,7 +371,7 @@ export function createGatewayRuntimeEventHandler(
       deps.dispatch({
         type: "updateAgent",
         agentId,
-        patch: { streamText: null, thinkingTrace: null },
+        patch: { streamText: null, thinkingTrace: null, runStartedAt: null },
       });
     }
   };
@@ -380,9 +408,13 @@ export function createGatewayRuntimeEventHandler(
         resolveThinkingFromAgentStream(data, mergedRaw, { treatPlainTextAsThinking: true }) ??
         (mergedRaw.trim() ? mergedRaw.trim() : null);
       if (liveThinking) {
+        if (!thinkingStartedAtByRun.has(payload.runId)) {
+          thinkingStartedAtByRun.set(payload.runId, now());
+        }
         deps.queueLivePatch(match, {
           status: "running",
           runId: payload.runId,
+          ...(agent.runStartedAt === null ? { runStartedAt: now() } : {}),
           sessionCreated: true,
           lastActivityAt: now(),
           thinkingTrace: liveThinking,
@@ -412,7 +444,13 @@ export function createGatewayRuntimeEventHandler(
         sessionCreated: true,
       };
       if (liveThinking) {
+        if (!thinkingStartedAtByRun.has(payload.runId)) {
+          thinkingStartedAtByRun.set(payload.runId, now());
+        }
         patch.thinkingTrace = liveThinking;
+      }
+      if (agent.runStartedAt === null) {
+        patch.runStartedAt = now();
       }
       if (mergedRaw && (!rawText || !isUiMetadataPrefix(rawText.trim()))) {
         const visibleText = extractText({ role: "assistant", content: mergedRaw }) ?? mergedRaw;
@@ -496,6 +534,20 @@ export function createGatewayRuntimeEventHandler(
       const finalText = agent.streamText?.trim();
       if (finalText) {
         const assistantCompletionAt = now();
+        const startedAt = thinkingStartedAtByRun.get(payload.runId);
+        const thinkingDurationMs =
+          typeof startedAt === "number"
+            ? Math.max(0, assistantCompletionAt - startedAt)
+            : null;
+        deps.dispatch({
+          type: "appendOutput",
+          agentId: match,
+          line: formatMetaMarkdown({
+            role: "assistant",
+            timestamp: assistantCompletionAt,
+            thinkingDurationMs,
+          }),
+        });
         deps.dispatch({
           type: "appendOutput",
           agentId: match,

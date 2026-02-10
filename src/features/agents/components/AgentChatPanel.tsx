@@ -12,7 +12,7 @@ import {
 import type { AgentState as AgentRecord } from "@/features/agents/state/store";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Cog, Shuffle } from "lucide-react";
+import { ChevronRight, Clock, Cog, Shuffle } from "lucide-react";
 import type { GatewayModelChoice } from "@/lib/gateway/models";
 import { isToolMarkdown, isTraceMarkdown } from "@/lib/text/message-extract";
 import { isNearBottom } from "@/lib/dom";
@@ -24,6 +24,21 @@ import {
   type AgentChatItem,
 } from "./chatItems";
 import { EmptyStatePanel } from "./EmptyStatePanel";
+
+const formatChatTimestamp = (timestampMs: number): string => {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date(timestampMs));
+};
+
+const formatDurationLabel = (durationMs: number): string => {
+  const seconds = durationMs / 1000;
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0.0s";
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  return `${Math.round(seconds)}s`;
+};
 
 type AgentChatPanelProps = {
   agent: AgentRecord;
@@ -40,59 +55,244 @@ type AgentChatPanelProps = {
   onAvatarShuffle: () => void;
 };
 
+const ThinkingDetailsRow = memo(function ThinkingDetailsRow({
+  avatarSeed,
+  avatarUrl,
+  name,
+  thinkingText,
+  durationMs,
+  showTyping,
+}: {
+  avatarSeed: string;
+  avatarUrl: string | null;
+  name: string;
+  thinkingText: string;
+  durationMs?: number;
+  showTyping?: boolean;
+}) {
+  if (!thinkingText.trim()) return null;
+  return (
+    <details className="group rounded-md border border-border/60 bg-muted/25 px-2 py-1.5 text-[11px] text-muted-foreground/90">
+      <summary className="flex cursor-pointer list-none items-center gap-2 opacity-70 [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3 w-3 shrink-0 transition group-open:rotate-90" />
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em]">
+            Thinking (internal)
+          </span>
+          {typeof durationMs === "number" ? (
+            <span className="inline-flex items-center gap-1 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/90">
+              <Clock className="h-3 w-3" />
+              {formatDurationLabel(durationMs)}
+            </span>
+          ) : null}
+          {showTyping ? (
+            <span className="typing-dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          ) : null}
+        </span>
+      </summary>
+      <div className="mt-2 flex items-start gap-2">
+        <AgentAvatar seed={avatarSeed} name={name} avatarUrl={avatarUrl} size={18} />
+        <div className="agent-markdown min-w-0 text-foreground/90">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{thinkingText}</ReactMarkdown>
+        </div>
+      </div>
+    </details>
+  );
+});
+
+const UserMessageCard = memo(function UserMessageCard({
+  text,
+  timestampMs,
+}: {
+  text: string;
+  timestampMs?: number;
+}) {
+  return (
+    <div className="w-full max-w-[70ch] self-end overflow-hidden rounded-md border border-border/70 bg-primary/10">
+      <div className="flex items-center justify-between gap-3 bg-primary/15 px-3 py-1.5">
+        <div className="min-w-0 truncate font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-foreground/90">
+          You
+        </div>
+        {typeof timestampMs === "number" ? (
+          <time className="shrink-0 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/90">
+            {formatChatTimestamp(timestampMs)}
+          </time>
+        ) : null}
+      </div>
+      <div className="agent-markdown px-3 py-2 text-foreground">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      </div>
+    </div>
+  );
+});
+
+const AssistantMessageCard = memo(function AssistantMessageCard({
+  avatarSeed,
+  avatarUrl,
+  name,
+  timestampMs,
+  thinkingText,
+  thinkingDurationMs,
+  showTypingIndicator,
+  contentText,
+  streaming,
+}: {
+  avatarSeed: string;
+  avatarUrl: string | null;
+  name: string;
+  timestampMs?: number;
+  thinkingText?: string | null;
+  thinkingDurationMs?: number;
+  showTypingIndicator?: boolean;
+  contentText?: string | null;
+  streaming?: boolean;
+}) {
+  return (
+    <div className="w-full max-w-[78ch] self-start overflow-hidden rounded-md border border-border/70 bg-muted/25">
+      <div className="flex items-center justify-between gap-3 bg-muted/45 px-3 py-1.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <AgentAvatar seed={avatarSeed} name={name} avatarUrl={avatarUrl} size={22} />
+          <div className="min-w-0 truncate font-mono text-[10px] font-semibold uppercase tracking-[0.14em] text-foreground/90">
+            {name}
+          </div>
+        </div>
+        {typeof timestampMs === "number" ? (
+          <time className="shrink-0 font-mono text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/90">
+            {formatChatTimestamp(timestampMs)}
+          </time>
+        ) : null}
+      </div>
+
+      <div className="flex flex-col gap-2 px-3 py-2">
+        {streaming ? (
+          <div
+            className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/20 px-2 py-1.5 text-[11px] text-muted-foreground/90"
+            role="status"
+            aria-live="polite"
+            data-testid="agent-typing-indicator"
+          >
+            <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.12em]">
+              {showTypingIndicator ? "Typing" : "Streaming"}
+            </span>
+            <span className="typing-dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </span>
+          </div>
+        ) : null}
+
+        {thinkingText ? (
+          <ThinkingDetailsRow
+            avatarSeed={avatarSeed}
+            avatarUrl={avatarUrl}
+            name={name}
+            thinkingText={thinkingText}
+            durationMs={thinkingDurationMs}
+            showTyping={streaming}
+          />
+        ) : null}
+
+        {contentText ? (
+          <div
+            className={streaming ? "whitespace-pre-wrap break-words text-foreground" : "agent-markdown text-foreground"}
+          >
+            {streaming ? contentText : <ReactMarkdown remarkPlugins={[remarkGfm]}>{contentText}</ReactMarkdown>}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+});
+
 const AgentChatFinalItems = memo(function AgentChatFinalItems({
   agentId,
   name,
   avatarSeed,
   avatarUrl,
   chatItems,
-  autoExpandThinking,
-  lastThinkingItemIndex,
+  running,
+  runStartedAt,
 }: {
   agentId: string;
   name: string;
   avatarSeed: string;
   avatarUrl: string | null;
   chatItems: AgentChatItem[];
-  autoExpandThinking: boolean;
-  lastThinkingItemIndex: number;
+  running: boolean;
+  runStartedAt: number | null;
 }) {
+  let pendingThinking: AgentChatItem | null = null;
+  const blocks: Array<
+    | { kind: "user"; text: string; timestampMs?: number }
+    | {
+        kind: "assistant";
+        text: string | null;
+        timestampMs?: number;
+        thinkingText?: string;
+        thinkingDurationMs?: number;
+      }
+    | { kind: "tool"; text: string }
+  > = [];
+
+  for (const item of chatItems) {
+    if (item.kind === "thinking") {
+      pendingThinking = item;
+      continue;
+    }
+    if (item.kind === "user") {
+      pendingThinking = null;
+      blocks.push({ kind: "user", text: item.text, timestampMs: item.timestampMs });
+      continue;
+    }
+    if (item.kind === "assistant") {
+      blocks.push({
+        kind: "assistant",
+        text: item.text,
+        timestampMs: item.timestampMs ?? pendingThinking?.timestampMs,
+        thinkingText: pendingThinking?.kind === "thinking" ? pendingThinking.text : undefined,
+        thinkingDurationMs:
+          item.thinkingDurationMs ??
+          (pendingThinking?.kind === "thinking" ? pendingThinking.thinkingDurationMs : undefined),
+      });
+      pendingThinking = null;
+      continue;
+    }
+    blocks.push({ kind: "tool", text: item.text });
+  }
+
+  if (pendingThinking?.kind === "thinking") {
+    blocks.push({
+      kind: "assistant",
+      text: null,
+      timestampMs: pendingThinking.timestampMs,
+      thinkingText: pendingThinking.text,
+      thinkingDurationMs: pendingThinking.thinkingDurationMs,
+    });
+  }
+
   return (
     <>
-      {chatItems.map((item, index) => {
-        if (item.kind === "thinking") {
+      {blocks.map((block, index) => {
+        if (block.kind === "user") {
           return (
-            <details
-              key={`chat-${agentId}-thinking-${index}`}
-              className="rounded-md border border-border/70 bg-muted/55 text-[11px] text-muted-foreground"
-              open={autoExpandThinking && index === lastThinkingItemIndex}
-            >
-              <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.11em] [&::-webkit-details-marker]:hidden">
-                <AgentAvatar seed={avatarSeed} name={name} avatarUrl={avatarUrl} size={22} />
-                <span>Thinking</span>
-              </summary>
-              <div className="agent-markdown px-2 pb-2 text-foreground">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
-              </div>
-            </details>
-          );
-        }
-        if (item.kind === "user") {
-          return (
-            <div
+            <UserMessageCard
               key={`chat-${agentId}-user-${index}`}
-              className="rounded-md border border-border/70 bg-muted/70 px-3 py-2 text-foreground"
-            >
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{`> ${item.text}`}</ReactMarkdown>
-            </div>
+              text={block.text}
+              timestampMs={block.timestampMs}
+            />
           );
         }
-        if (item.kind === "tool") {
-          const { summaryText, body } = summarizeToolLabel(item.text);
+        if (block.kind === "tool") {
+          const { summaryText, body } = summarizeToolLabel(block.text);
           return (
             <details
               key={`chat-${agentId}-tool-${index}`}
-              className="rounded-md border border-border/70 bg-muted/55 px-2 py-1 text-[11px] text-muted-foreground"
+              className="w-full max-w-[78ch] self-start rounded-md border border-border/70 bg-muted/20 px-2 py-1 text-[11px] text-muted-foreground"
             >
               <summary className="cursor-pointer select-none font-mono text-[10px] font-semibold uppercase tracking-[0.11em]">
                 {summaryText}
@@ -105,13 +305,19 @@ const AgentChatFinalItems = memo(function AgentChatFinalItems({
             </details>
           );
         }
+        const streaming = running && index === blocks.length - 1 && !block.text;
         return (
-          <div
+          <AssistantMessageCard
             key={`chat-${agentId}-assistant-${index}`}
-            className="agent-markdown rounded-md border border-transparent px-0.5"
-          >
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown>
-          </div>
+            avatarSeed={avatarSeed}
+            avatarUrl={avatarUrl}
+            name={name}
+            timestampMs={block.timestampMs ?? (streaming ? runStartedAt ?? undefined : undefined)}
+            thinkingText={block.thinkingText ?? null}
+            thinkingDurationMs={block.thinkingDurationMs}
+            contentText={block.text}
+            streaming={streaming}
+          />
         );
       })}
     </>
@@ -125,14 +331,13 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
   avatarUrl,
   status,
   chatItems,
-  autoExpandThinking,
-  lastThinkingItemIndex,
   liveThinkingText,
   liveAssistantText,
   showTypingIndicator,
   outputLineCount,
   liveAssistantCharCount,
   liveThinkingCharCount,
+  runStartedAt,
   scrollToBottomNextOutputRef,
 }: {
   agentId: string;
@@ -141,14 +346,13 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
   avatarUrl: string | null;
   status: AgentRecord["status"];
   chatItems: AgentChatItem[];
-  autoExpandThinking: boolean;
-  lastThinkingItemIndex: number;
   liveThinkingText: string;
   liveAssistantText: string;
   showTypingIndicator: boolean;
   outputLineCount: number;
   liveAssistantCharCount: number;
   liveThinkingCharCount: number;
+  runStartedAt: number | null;
   scrollToBottomNextOutputRef: MutableRefObject<boolean>;
 }) {
   const chatRef = useRef<HTMLDivElement | null>(null);
@@ -256,52 +460,23 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
                 avatarSeed={avatarSeed}
                 avatarUrl={avatarUrl}
                 chatItems={chatItems}
-                autoExpandThinking={autoExpandThinking}
-                lastThinkingItemIndex={lastThinkingItemIndex}
+                running={status === "running"}
+                runStartedAt={runStartedAt}
               />
-              {liveThinkingText ? (
-                <details
-                  className="rounded-md border border-border/70 bg-muted/55 text-[11px] text-muted-foreground"
-                  open={status === "running" && autoExpandThinking}
-                >
-                  <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-[0.11em] [&::-webkit-details-marker]:hidden">
-                    <AgentAvatar seed={avatarSeed} name={name} avatarUrl={avatarUrl} size={22} />
-                    <span>Thinking</span>
-                    {status === "running" ? (
-                      <span className="typing-dots" aria-hidden="true">
-                        <span />
-                        <span />
-                        <span />
-                      </span>
-                    ) : null}
-                  </summary>
-                  <div className="px-2 pb-2 text-foreground">
-                    <div className="whitespace-pre-wrap break-words">{liveThinkingText}</div>
-                  </div>
-                </details>
-              ) : null}
-              {liveAssistantText ? (
-                <div className="agent-markdown rounded-md border border-transparent px-0.5 opacity-85">
-                  {liveAssistantText}
-                </div>
-              ) : null}
-              {showTypingIndicator ? (
-                <div
-                  className="flex items-center gap-2 rounded-md border border-border/70 bg-muted/55 px-2 py-1.5 text-[11px] text-muted-foreground"
-                  role="status"
-                  aria-live="polite"
-                  data-testid="agent-typing-indicator"
-                >
-                  <AgentAvatar seed={avatarSeed} name={name} avatarUrl={avatarUrl} size={22} />
-                  <span className="font-mono text-[10px] font-semibold uppercase tracking-[0.11em]">
-                    Thinking
-                  </span>
-                  <span className="typing-dots" aria-hidden="true">
-                    <span />
-                    <span />
-                    <span />
-                  </span>
-                </div>
+              {liveThinkingText || liveAssistantText || showTypingIndicator ? (
+                <AssistantMessageCard
+                  avatarSeed={avatarSeed}
+                  avatarUrl={avatarUrl}
+                  name={name}
+                  timestampMs={runStartedAt ?? undefined}
+                  thinkingText={liveThinkingText || null}
+                  thinkingDurationMs={
+                    typeof runStartedAt === "number" ? Math.max(0, Date.now() - runStartedAt) : undefined
+                  }
+                  showTypingIndicator={showTypingIndicator}
+                  contentText={liveAssistantText || null}
+                  streaming={status === "running"}
+                />
               ) : null}
               <div ref={chatBottomRef} />
             </>
@@ -500,34 +675,6 @@ export const AgentChatPanel = ({
     }
     return false;
   }, [agent.outputLines, agent.showThinkingTraces, latestUserOutputIndex]);
-  const hasSavedAssistantSinceLatestUser = useMemo(() => {
-    if (latestUserOutputIndex < 0) return false;
-    for (
-      let index = latestUserOutputIndex + 1;
-      index < agent.outputLines.length;
-      index += 1
-    ) {
-      const line = agent.outputLines[index]?.trim() ?? "";
-      if (!line) continue;
-      if (line.startsWith(">")) continue;
-      if (isTraceMarkdown(line)) continue;
-      if (isToolMarkdown(line)) continue;
-      return true;
-    }
-    return false;
-  }, [agent.outputLines, latestUserOutputIndex]);
-  const lastThinkingItemIndex = useMemo(() => {
-    for (let index = chatItems.length - 1; index >= 0; index -= 1) {
-      if (chatItems[index]?.kind === "thinking") {
-        return index;
-      }
-    }
-    return -1;
-  }, [chatItems]);
-  const autoExpandThinking =
-    agent.status === "running" &&
-    !hasSavedAssistantSinceLatestUser &&
-    (lastThinkingItemIndex >= 0 || hasVisibleLiveThinking);
   const showTypingIndicator =
     agent.status === "running" &&
     !hasLiveAssistantText &&
@@ -696,14 +843,13 @@ export const AgentChatPanel = ({
           avatarUrl={agent.avatarUrl ?? null}
           status={agent.status}
           chatItems={chatItems}
-          autoExpandThinking={autoExpandThinking}
-          lastThinkingItemIndex={lastThinkingItemIndex}
           liveThinkingText={liveThinkingText}
           liveAssistantText={liveAssistantText}
           showTypingIndicator={showTypingIndicator}
           outputLineCount={agent.outputLines.length}
           liveAssistantCharCount={agent.streamText?.length ?? 0}
           liveThinkingCharCount={agent.thinkingTrace?.length ?? 0}
+          runStartedAt={agent.runStartedAt}
           scrollToBottomNextOutputRef={scrollToBottomNextOutputRef}
         />
 

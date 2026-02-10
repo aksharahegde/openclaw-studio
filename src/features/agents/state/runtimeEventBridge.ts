@@ -3,6 +3,7 @@ import {
   extractText,
   extractThinking,
   extractToolLines,
+  formatMetaMarkdown,
   formatThinkingMarkdown,
   isHeartbeatPrompt,
   isUiMetadataPrefix,
@@ -231,6 +232,10 @@ export const buildHistoryLines = (messages: ChatHistoryMessage[]): HistoryLinesR
     if (role === "user") {
       if (text && isHeartbeatPrompt(text)) continue;
       if (text) {
+        const at = extractMessageTimestamp(message);
+        if (typeof at === "number") {
+          lines.push(formatMetaMarkdown({ role: "user", timestamp: at }));
+        }
         lines.push(`> ${text}`);
         lastUser = text;
       }
@@ -239,6 +244,13 @@ export const buildHistoryLines = (messages: ChatHistoryMessage[]): HistoryLinesR
       const at = extractMessageTimestamp(message);
       if (typeof at === "number") {
         lastAssistantAt = at;
+      }
+      if (text && !thinking && toolLines.length === 0 && text === lastAssistant) {
+        lastRole = "assistant";
+        continue;
+      }
+      if (typeof at === "number") {
+        lines.push(formatMetaMarkdown({ role: "assistant", timestamp: at }));
       }
       if (thinking) {
         lines.push(thinking);
@@ -312,6 +324,7 @@ export const buildHistorySyncPatch = ({
     if (!runId && status === "running" && lastRole === "assistant") {
       patch.status = "idle";
       patch.runId = null;
+      patch.runStartedAt = null;
       patch.streamText = null;
       patch.thinkingTrace = null;
     }
@@ -328,6 +341,7 @@ export const buildHistorySyncPatch = ({
   if (!runId && status === "running" && lastRole === "assistant") {
     patch.status = "idle";
     patch.runId = null;
+    patch.runStartedAt = null;
     patch.streamText = null;
     patch.thinkingTrace = null;
   }
@@ -404,6 +418,7 @@ export const resolveLifecyclePatch = (input: LifecyclePatchInput): LifecycleTran
       patch: {
         status: "running",
         runId: incomingRunId,
+        runStartedAt: lastActivityAt,
         sessionCreated: true,
         lastActivityAt,
       },
@@ -419,6 +434,7 @@ export const resolveLifecyclePatch = (input: LifecyclePatchInput): LifecycleTran
       patch: {
         status: "error",
         runId: null,
+        runStartedAt: null,
         streamText: null,
         thinkingTrace: null,
         lastActivityAt,
@@ -431,6 +447,7 @@ export const resolveLifecyclePatch = (input: LifecyclePatchInput): LifecycleTran
     patch: {
       status: "idle",
       runId: null,
+      runStartedAt: null,
       streamText: null,
       thinkingTrace: null,
       lastActivityAt,

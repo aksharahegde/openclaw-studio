@@ -297,6 +297,7 @@ describe("runtime event bridge helpers", () => {
 
     expect(history.lines).toEqual([
       "> hello there",
+      '[[meta]]{"role":"assistant","timestamp":1704067200000}',
       "[[trace]]\n_step one_",
       "assistant final",
       "[[tool-result]] shell (call-1)\nok\n```text\ndone\n```",
@@ -338,10 +339,14 @@ describe("runtime event bridge helpers", () => {
       runId: null,
     });
     expect(unchanged).toEqual({
-      historyLoadedAt: 200,
+      outputLines: ['[[meta]]{"role":"assistant","timestamp":1704067200000}', "done"],
+      lastResult: "done",
+      latestPreview: "done",
       lastAssistantMessageAt: Date.parse("2024-01-01T00:00:00.000Z"),
+      historyLoadedAt: 200,
       status: "idle",
       runId: null,
+      runStartedAt: null,
       streamText: null,
       thinkingTrace: null,
     });
@@ -361,7 +366,7 @@ describe("runtime event bridge helpers", () => {
       runId: null,
     });
     expect(merged).toEqual({
-      outputLines: ["> hello", "pending line", "assistant final"],
+      outputLines: ["> hello", "pending line", '[[meta]]{"role":"assistant","timestamp":1704067202000}', "assistant final"],
       lastResult: "assistant final",
       latestPreview: "assistant final",
       lastAssistantMessageAt: Date.parse("2024-01-01T00:00:02.000Z"),
@@ -369,6 +374,7 @@ describe("runtime event bridge helpers", () => {
       historyLoadedAt: 300,
       status: "idle",
       runId: null,
+      runStartedAt: null,
       streamText: null,
       thinkingTrace: null,
     });

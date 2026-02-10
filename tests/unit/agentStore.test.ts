@@ -78,6 +78,7 @@ describe("agent store", () => {
     expect(patch.historyLoadedAt).toBeNull();
     expect(patch.lastUserMessage).toBeNull();
     expect(patch.runId).toBeNull();
+    expect(patch.runStartedAt).toBeNull();
     expect(patch.latestPreview).toBeNull();
     expect(patch.latestOverride).toBeNull();
     expect(patch.latestOverrideKind).toBeNull();

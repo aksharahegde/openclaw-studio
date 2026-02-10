@@ -1,5 +1,5 @@
 import { syncGatewaySessionSettings, type GatewayClient } from "@/lib/gateway/GatewayClient";
-import { buildAgentInstruction } from "@/lib/text/message-extract";
+import { buildAgentInstruction, formatMetaMarkdown } from "@/lib/text/message-extract";
 import type { AgentState } from "@/features/agents/state/store";
 
 type SendDispatchAction =
@@ -59,12 +59,18 @@ export async function sendChatMessageViaStudio(params: {
     patch: {
       status: "running",
       runId,
+      runStartedAt: now(),
       streamText: "",
       thinkingTrace: null,
       draft: "",
       lastUserMessage: trimmed,
       lastActivityAt: now(),
     },
+  });
+  params.dispatch({
+    type: "appendOutput",
+    agentId,
+    line: formatMetaMarkdown({ role: "user", timestamp: now() }),
   });
   params.dispatch({
     type: "appendOutput",
@@ -112,7 +118,7 @@ export async function sendChatMessageViaStudio(params: {
     params.dispatch({
       type: "updateAgent",
       agentId,
-      patch: { status: "error", runId: null, streamText: null, thinkingTrace: null },
+      patch: { status: "error", runId: null, runStartedAt: null, streamText: null, thinkingTrace: null },
     });
     params.dispatch({
       type: "appendOutput",

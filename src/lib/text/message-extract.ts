@@ -28,6 +28,7 @@ const TRACE_MARKDOWN_PREFIX = "[[trace]]";
 
 const TOOL_CALL_PREFIX = "[[tool]]";
 const TOOL_RESULT_PREFIX = "[[tool-result]]";
+const META_PREFIX = "[[meta]]";
 
 export type AgentInstructionParams = {
   message: string;
@@ -425,6 +426,43 @@ export const extractToolLines = (message: unknown): string[] => {
 
 export const isToolMarkdown = (line: string): boolean =>
   line.startsWith(TOOL_CALL_PREFIX) || line.startsWith(TOOL_RESULT_PREFIX);
+
+export const isMetaMarkdown = (line: string): boolean => line.startsWith(META_PREFIX);
+
+export const formatMetaMarkdown = (meta: {
+  role: "user" | "assistant";
+  timestamp: number;
+  thinkingDurationMs?: number | null;
+}): string => {
+  return `${META_PREFIX}${JSON.stringify({
+    role: meta.role,
+    timestamp: meta.timestamp,
+    ...(typeof meta.thinkingDurationMs === "number" ? { thinkingDurationMs: meta.thinkingDurationMs } : {}),
+  })}`;
+};
+
+export const parseMetaMarkdown = (
+  line: string
+): { role: "user" | "assistant"; timestamp: number; thinkingDurationMs?: number } | null => {
+  if (!isMetaMarkdown(line)) return null;
+  const raw = line.slice(META_PREFIX.length).trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const role = parsed.role === "user" || parsed.role === "assistant" ? parsed.role : null;
+    const timestamp = typeof parsed.timestamp === "number" ? parsed.timestamp : null;
+    if (!role || !timestamp || !Number.isFinite(timestamp) || timestamp <= 0) return null;
+    const thinkingDurationMs =
+      typeof parsed.thinkingDurationMs === "number" && Number.isFinite(parsed.thinkingDurationMs)
+        ? parsed.thinkingDurationMs
+        : undefined;
+    return thinkingDurationMs !== undefined
+      ? { role, timestamp, thinkingDurationMs }
+      : { role, timestamp };
+  } catch {
+    return null;
+  }
+};
 
 export const parseToolMarkdown = (
   line: string

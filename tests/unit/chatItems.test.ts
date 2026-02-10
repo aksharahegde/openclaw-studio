@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildAgentChatItems, buildFinalAgentChatItems } from "@/features/agents/components/chatItems";
-import { formatThinkingMarkdown } from "@/lib/text/message-extract";
+import { formatMetaMarkdown, formatThinkingMarkdown } from "@/lib/text/message-extract";
 
 describe("buildAgentChatItems", () => {
   it("keeps thinking traces aligned with each assistant turn", () => {
@@ -87,5 +87,33 @@ describe("buildFinalAgentChatItems", () => {
     });
 
     expect(items.map((item) => item.kind)).toEqual(["user", "thinking", "assistant"]);
+  });
+
+  it("propagates meta timestamps and thinking duration into subsequent items", () => {
+    const items = buildFinalAgentChatItems({
+      outputLines: [
+        formatMetaMarkdown({ role: "user", timestamp: 1700000000000 }),
+        "> hello",
+        formatMetaMarkdown({ role: "assistant", timestamp: 1700000001234, thinkingDurationMs: 1800 }),
+        formatThinkingMarkdown("plan"),
+        "answer",
+      ],
+      showThinkingTraces: true,
+      toolCallingEnabled: true,
+    });
+
+    expect(items[0]).toMatchObject({ kind: "user", text: "hello", timestampMs: 1700000000000 });
+    expect(items[1]).toMatchObject({
+      kind: "thinking",
+      text: "_plan_",
+      timestampMs: 1700000001234,
+      thinkingDurationMs: 1800,
+    });
+    expect(items[2]).toMatchObject({
+      kind: "assistant",
+      text: "answer",
+      timestampMs: 1700000001234,
+      thinkingDurationMs: 1800,
+    });
   });
 });

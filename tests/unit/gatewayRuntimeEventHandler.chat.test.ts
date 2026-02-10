@@ -16,6 +16,7 @@ const createAgent = (overrides?: Partial<AgentState>): AgentState => ({
   lastResult: null,
   lastDiff: null,
   runId: null,
+  runStartedAt: null,
   streamText: null,
   thinkingTrace: null,
   latestOverride: null,
@@ -73,10 +74,13 @@ describe("gateway runtime event handler (chat)", () => {
     handler.handleEvent(event);
 
     expect(queueLivePatch).toHaveBeenCalledTimes(1);
-    expect(queueLivePatch).toHaveBeenCalledWith("agent-1", {
-      streamText: "Hello",
-      status: "running",
-    });
+    expect(queueLivePatch).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        streamText: "Hello",
+        status: "running",
+      })
+    );
   });
 
   it("ignores user/system roles for streaming output", () => {
@@ -266,4 +270,3 @@ describe("gateway runtime event handler (chat)", () => {
     );
   });
 });
-

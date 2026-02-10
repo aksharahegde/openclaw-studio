@@ -16,6 +16,7 @@ const createAgent = (overrides?: Partial<AgentState>): AgentState => ({
   lastResult: null,
   lastDiff: null,
   runId: null,
+  runStartedAt: null,
   streamText: null,
   thinkingTrace: null,
   latestOverride: null,
@@ -262,4 +263,3 @@ describe("gateway runtime event handler (agent)", () => {
     ).toBe(true);
   });
 });
-

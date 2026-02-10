@@ -18,6 +18,7 @@ const createAgent = (): AgentState => ({
   lastResult: null,
   lastDiff: null,
   runId: null,
+  runStartedAt: null,
   streamText: null,
   thinkingTrace: null,
   latestOverride: null,
@@ -190,7 +191,7 @@ describe("AgentChatPanel controls", () => {
     );
 
     expect(screen.getByTestId("agent-typing-indicator")).toBeInTheDocument();
-    expect(within(screen.getByTestId("agent-typing-indicator")).getByText("Thinking")).toBeInTheDocument();
+    expect(within(screen.getByTestId("agent-typing-indicator")).getByText("Typing")).toBeInTheDocument();
   });
 
   it("hides_typing_indicator_after_stream_starts", () => {
@@ -216,7 +217,8 @@ describe("AgentChatPanel controls", () => {
       })
     );
 
-    expect(screen.queryByTestId("agent-typing-indicator")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-typing-indicator")).toBeInTheDocument();
+    expect(within(screen.getByTestId("agent-typing-indicator")).getByText("Streaming")).toBeInTheDocument();
   });
 
   it("hides_typing_indicator_when_thinking_trace_has_started", () => {
@@ -241,35 +243,10 @@ describe("AgentChatPanel controls", () => {
       })
     );
 
-    expect(screen.queryByTestId("agent-typing-indicator")).not.toBeInTheDocument();
+    expect(screen.getByTestId("agent-typing-indicator")).toBeInTheDocument();
   });
 
-  it("auto_expands_thinking_panel_while_run_is_active", () => {
-    render(
-      createElement(AgentChatPanel, {
-        agent: {
-          ...createAgent(),
-          status: "running",
-          outputLines: ["> test", formatThinkingMarkdown("thinking now")],
-        },
-        isSelected: true,
-        canSend: true,
-        models,
-        stopBusy: false,
-        onOpenSettings: vi.fn(),
-        onModelChange: vi.fn(),
-        onThinkingChange: vi.fn(),
-        onDraftChange: vi.fn(),
-        onSend: vi.fn(),
-        onStopRun: vi.fn(),
-        onAvatarShuffle: vi.fn(),
-      })
-    );
-
-    expect(screen.getByText("thinking now").closest("details")).toHaveAttribute("open");
-  });
-
-  it("closes_thinking_panel_when_final_message_is_present", () => {
+  it("renders thinking row collapsed by default", () => {
     render(
       createElement(AgentChatPanel, {
         agent: {
@@ -291,6 +268,8 @@ describe("AgentChatPanel controls", () => {
       })
     );
 
-    expect(screen.getByText("thinking now").closest("details")).not.toHaveAttribute("open");
+    const details = screen.getByText("Thinking (internal)").closest("details");
+    expect(details).toBeTruthy();
+    expect(details).not.toHaveAttribute("open");
   });
 });
