@@ -8,6 +8,7 @@ import {
 import type { StudioSettings, StudioSettingsPatch } from "@/lib/studio/settings";
 import { resolveStudioProxyGatewayUrl } from "@/lib/gateway/proxy-url";
 import { ensureGatewayReloadModeHotForLocalStudio } from "@/lib/gateway/gatewayReloadMode";
+import { GatewayResponseError } from "@/lib/gateway/errors";
 
 export type ReqFrame = {
   type: "req";
@@ -88,29 +89,8 @@ export type GatewayConnectOptions = {
   token?: string;
 };
 
-export type GatewayErrorPayload = {
-  code: string;
-  message: string;
-  details?: unknown;
-  retryable?: boolean;
-  retryAfterMs?: number;
-};
-
-export class GatewayResponseError extends Error {
-  code: string;
-  details?: unknown;
-  retryable?: boolean;
-  retryAfterMs?: number;
-
-  constructor(payload: GatewayErrorPayload) {
-    super(payload.message || "Gateway request failed");
-    this.name = "GatewayResponseError";
-    this.code = payload.code;
-    this.details = payload.details;
-    this.retryable = payload.retryable;
-    this.retryAfterMs = payload.retryAfterMs;
-  }
-}
+export { GatewayResponseError } from "@/lib/gateway/errors";
+export type { GatewayErrorPayload } from "@/lib/gateway/errors";
 
 export class GatewayClient {
   private client: GatewayBrowserClient | null = null;

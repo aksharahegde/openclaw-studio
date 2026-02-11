@@ -70,6 +70,7 @@ import { deleteAgentViaStudio } from "@/features/agents/operations/deleteAgentOp
 import { sendChatMessageViaStudio } from "@/features/agents/operations/chatSendOperation";
 import { hydrateAgentFleetFromGateway } from "@/features/agents/operations/agentFleetHydration";
 import { useConfigMutationQueue } from "@/features/agents/operations/useConfigMutationQueue";
+import { isLocalGatewayUrl } from "@/lib/gateway/local-gateway";
 import { useGatewayRestartBlock } from "@/features/agents/operations/useGatewayRestartBlock";
 import { randomUUID } from "@/lib/uuid";
 
@@ -270,6 +271,7 @@ const AgentStudioPage = () => {
     [agents]
   );
   const hasRunningAgents = runningAgentCount > 0;
+  const isLocalGateway = useMemo(() => isLocalGatewayUrl(gatewayUrl), [gatewayUrl]);
 
   const hasRestartBlockInProgress = Boolean(
     (deleteAgentBlock && deleteAgentBlock.phase !== "queued") ||
@@ -1030,13 +1032,19 @@ const AgentStudioPage = () => {
                 phase: "deleting",
               };
             });
-	            await deleteAgentViaStudio({
-	              client,
-	              agentId,
-	              fetchJson,
-	              logError: (message, error) => console.error(message, error),
-	            });
+            await deleteAgentViaStudio({
+              client,
+              agentId,
+              fetchJson,
+              logError: (message, error) => console.error(message, error),
+            });
             setSettingsAgentId(null);
+            if (isLocalGateway) {
+              await loadAgents();
+              setDeleteAgentBlock(null);
+              setMobilePane("chat");
+              return;
+            }
             setDeleteAgentBlock((current) => {
               if (!current || current.agentId !== agentId) return current;
               return {
@@ -1059,6 +1067,8 @@ const AgentStudioPage = () => {
       createAgentBlock,
       deleteAgentBlock,
       enqueueConfigMutation,
+      isLocalGateway,
+      loadAgents,
       renameAgentBlock,
       setError,
     ]
@@ -1216,6 +1226,25 @@ const AgentStudioPage = () => {
           dispatch({ type: "selectAgent", agentId: created.id });
           setSettingsAgentId(null);
           setMobilePane("chat");
+          if (isLocalGateway) {
+            await loadAgents();
+            setCreateAgentBlock((current) => {
+              if (!current || current.agentName !== name) return current;
+              return { ...current, agentId: created.id, phase: "bootstrapping-files" };
+            });
+            try {
+              await bootstrapAgentBrainFilesFromTemplate({ client, agentId: created.id });
+            } catch (err) {
+              const message =
+                err instanceof Error
+                  ? err.message
+                  : "Failed to bootstrap brain files for the new agent.";
+              console.error(message, err);
+              setError(message);
+            }
+            setCreateAgentBlock(null);
+            return;
+          }
           setCreateAgentBlock((current) => {
             if (!current || current.agentName !== name) return current;
             return {
@@ -1241,6 +1270,8 @@ const AgentStudioPage = () => {
     deleteAgentBlock,
     flushPendingDraft,
     focusedAgent,
+    isLocalGateway,
+    loadAgents,
     renameAgentBlock,
     dispatch,
     enqueueConfigMutation,
@@ -1546,6 +1577,12 @@ const AgentStudioPage = () => {
               agentId,
               patch: { name },
             });
+            if (isLocalGateway) {
+              await loadAgents();
+              setRenameAgentBlock(null);
+              setMobilePane("chat");
+              return;
+            }
             setRenameAgentBlock((current) => {
               if (!current || current.agentId !== agentId) return current;
               return {
@@ -1571,6 +1608,8 @@ const AgentStudioPage = () => {
       deleteAgentBlock,
       dispatch,
       enqueueConfigMutation,
+      isLocalGateway,
+      loadAgents,
       renameAgentBlock,
       setError,
     ]

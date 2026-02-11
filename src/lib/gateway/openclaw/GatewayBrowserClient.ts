@@ -1,4 +1,5 @@
 import { getPublicKeyAsync, signAsync, utils } from "@noble/ed25519";
+import { GatewayResponseError } from "@/lib/gateway/errors";
 
 const GATEWAY_CLIENT_NAMES = {
   CONTROL_UI: "openclaw-control-ui",
@@ -551,7 +552,19 @@ export class GatewayBrowserClient {
       if (!pending) return;
       this.pending.delete(res.id);
       if (res.ok) pending.resolve(res.payload);
-      else pending.reject(new Error(res.error?.message ?? "request failed"));
+      else {
+        if (res.error && typeof res.error.code === "string") {
+          pending.reject(
+            new GatewayResponseError({
+              code: res.error.code,
+              message: res.error.message ?? "request failed",
+              details: res.error.details,
+            })
+          );
+          return;
+        }
+        pending.reject(new Error(res.error?.message ?? "request failed"));
+      }
       return;
     }
   }
