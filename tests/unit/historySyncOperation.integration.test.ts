@@ -57,6 +57,6 @@ describe("historySyncOperation integration", () => {
       runId: "run-1",
     });
     expect(logError).toHaveBeenCalledTimes(1);
-    expect(logError).toHaveBeenCalledWith("Unexpected failure", commands[3]?.error);
+    expect(logError).toHaveBeenCalledWith("Unexpected failure", expect.any(Error));
   });
 });

@@ -58,7 +58,7 @@ describe("historySyncOperation", () => {
   it("returns noop when request intent resolves to skip", async () => {
     const commands = await runHistorySyncOperation({
       client: {
-        call: async () => ({ messages: [] as ChatHistoryMessage[] }),
+        call: async <T>() => ({ messages: [] as ChatHistoryMessage[] }) as T,
       },
       agentId: "agent-1",
       getAgent: () => null,
@@ -82,11 +82,11 @@ describe("historySyncOperation", () => {
     });
     const commands = await runHistorySyncOperation({
       client: {
-        call: async () =>
+        call: async <T>() =>
           ({
             sessionKey: agent.sessionKey,
             messages: [{ role: "assistant", content: "remote answer" }],
-          }) as const,
+          }) as T,
       },
       agentId: "agent-1",
       getAgent: () => agent,
@@ -130,11 +130,11 @@ describe("historySyncOperation", () => {
     const messages: ChatHistoryMessage[] = [{ role: "assistant", content: "Merged answer" }];
     const commands = await runHistorySyncOperation({
       client: {
-        call: async () =>
+        call: async <T>() =>
           ({
             sessionKey: agent.sessionKey,
             messages,
-          }) as const,
+          }) as T,
       },
       agentId: "agent-1",
       getAgent: () => agent,
@@ -171,11 +171,11 @@ describe("historySyncOperation", () => {
     });
     const commands = await runHistorySyncOperation({
       client: {
-        call: async () =>
+        call: async <T>() =>
           ({
             sessionKey: agent.sessionKey,
             messages: [{ role: "assistant", content: "Legacy answer" }],
-          }) as const,
+          }) as T,
       },
       agentId: "agent-1",
       getAgent: () => agent,
@@ -195,5 +195,62 @@ describe("historySyncOperation", () => {
     expect(patch.outputLines).toContain("Legacy answer");
     expect(patch.lastResult).toBe("Legacy answer");
     expect(patch.lastAppliedHistoryRequestId).toBe("req-4");
+  });
+
+  it("returns stale-drop metric and metadata update when transcript revision changed during fetch", async () => {
+    const requestAgent = createAgent({
+      transcriptRevision: 7,
+      outputLines: ["> local question", "assistant current"],
+    });
+    const latestAgent = createAgent({
+      transcriptRevision: 8,
+      outputLines: ["> local question", "assistant current"],
+    });
+    let readCount = 0;
+    const inFlight = new Set<string>();
+    const commands = await runHistorySyncOperation({
+      client: {
+        call: async <T>() =>
+          ({
+            sessionKey: requestAgent.sessionKey,
+            messages: [{ role: "assistant", content: "stale remote answer" }],
+          }) as T,
+      },
+      agentId: "agent-1",
+      getAgent: () => {
+        readCount += 1;
+        return readCount <= 1 ? requestAgent : latestAgent;
+      },
+      inFlightSessionKeys: inFlight,
+      requestId: "req-5",
+      loadedAt: 5_678,
+      defaultLimit: 200,
+      maxLimit: 5000,
+      transcriptV2Enabled: true,
+    });
+
+    expect(commands).toContainEqual({
+      kind: "logMetric",
+      metric: "history_response_dropped_stale",
+      meta: {
+        reason: "transcript_revision_changed",
+        agentId: "agent-1",
+        requestId: "req-5",
+        requestRevision: 7,
+        latestRevision: 8,
+      },
+    });
+    expect(commands).toContainEqual({
+      kind: "dispatchUpdateAgent",
+      agentId: "agent-1",
+      patch: {
+        historyLoadedAt: 5_678,
+        historyFetchLimit: 200,
+        historyFetchedCount: 1,
+        historyMaybeTruncated: false,
+        lastAppliedHistoryRequestId: "req-5",
+      },
+    });
+    expect(inFlight.size).toBe(0);
   });
 });
