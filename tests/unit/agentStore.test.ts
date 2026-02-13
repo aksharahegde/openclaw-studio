@@ -28,6 +28,56 @@ describe("agent store", () => {
     expect(next.agents[0].outputLines).toEqual([]);
   });
 
+  it("hydrates agents with a requested selection when present", () => {
+    const seeds: AgentStoreSeed[] = [
+      {
+        agentId: "agent-1",
+        name: "Agent One",
+        sessionKey: "agent:agent-1:main",
+      },
+      {
+        agentId: "agent-2",
+        name: "Agent Two",
+        sessionKey: "agent:agent-2:main",
+      },
+    ];
+    const next = agentStoreReducer(initialAgentStoreState, {
+      type: "hydrateAgents",
+      agents: seeds,
+      selectedAgentId: " agent-2 ",
+    });
+    expect(next.selectedAgentId).toBe("agent-2");
+  });
+
+  it("keeps existing selection when requested selection is invalid", () => {
+    const seeds: AgentStoreSeed[] = [
+      {
+        agentId: "agent-1",
+        name: "Agent One",
+        sessionKey: "agent:agent-1:main",
+      },
+      {
+        agentId: "agent-2",
+        name: "Agent Two",
+        sessionKey: "agent:agent-2:main",
+      },
+    ];
+    let state = agentStoreReducer(initialAgentStoreState, {
+      type: "hydrateAgents",
+      agents: seeds,
+    });
+    state = agentStoreReducer(state, {
+      type: "selectAgent",
+      agentId: "agent-2",
+    });
+    state = agentStoreReducer(state, {
+      type: "hydrateAgents",
+      agents: seeds,
+      selectedAgentId: "missing-agent",
+    });
+    expect(state.selectedAgentId).toBe("agent-2");
+  });
+
   it("builds a patch that resets runtime state for a session reset", () => {
     const seed: AgentStoreSeed = {
       agentId: "agent-1",

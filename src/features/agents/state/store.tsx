@@ -114,7 +114,7 @@ export type AgentStoreState = {
 };
 
 type Action =
-  | { type: "hydrateAgents"; agents: AgentStoreSeed[] }
+  | { type: "hydrateAgents"; agents: AgentStoreSeed[]; selectedAgentId?: string }
   | { type: "setError"; error: string | null }
   | { type: "setLoading"; loading: boolean }
   | { type: "updateAgent"; agentId: string; patch: Partial<AgentState> }
@@ -236,8 +236,13 @@ const reducer = (state: AgentStoreState, action: Action): AgentStoreState => {
       const agents = action.agents.map((seed) =>
         createRuntimeAgentState(seed, byId.get(seed.agentId))
       );
+      const requestedSelectedAgentId = action.selectedAgentId?.trim() ?? "";
       const selectedAgentId =
-        state.selectedAgentId && agents.some((agent) => agent.agentId === state.selectedAgentId)
+        requestedSelectedAgentId &&
+        agents.some((agent) => agent.agentId === requestedSelectedAgentId)
+          ? requestedSelectedAgentId
+          : state.selectedAgentId &&
+              agents.some((agent) => agent.agentId === state.selectedAgentId)
           ? state.selectedAgentId
           : agents[0]?.agentId ?? null;
       return {
@@ -398,7 +403,7 @@ export const initialAgentStoreState = initialState;
 type AgentStoreContextValue = {
   state: AgentStoreState;
   dispatch: React.Dispatch<Action>;
-  hydrateAgents: (agents: AgentStoreSeed[]) => void;
+  hydrateAgents: (agents: AgentStoreSeed[], selectedAgentId?: string) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
 };
@@ -409,8 +414,8 @@ export const AgentStoreProvider = ({ children }: { children: ReactNode }) => {
   const [state, dispatch] = useReducer(reducer, initialState);
 
   const hydrateAgents = useCallback(
-    (agents: AgentStoreSeed[]) => {
-      dispatch({ type: "hydrateAgents", agents });
+    (agents: AgentStoreSeed[], selectedAgentId?: string) => {
+      dispatch({ type: "hydrateAgents", agents, selectedAgentId });
     },
     [dispatch]
   );
