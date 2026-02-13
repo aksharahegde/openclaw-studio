@@ -87,3 +87,10 @@ export const buildReconcileTerminalPatch = (params: {
     thinkingTrace: null,
   };
 };
+
+export const resolveReconcileWaitOutcome = (status: unknown): "ok" | "error" | null => {
+  if (status === "ok" || status === "error") {
+    return status;
+  }
+  return null;
+};

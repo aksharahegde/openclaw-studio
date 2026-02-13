@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildReconcileTerminalPatch,
   resolveReconcileEligibility,
+  resolveReconcileWaitOutcome,
   resolveSummarySnapshotIntent,
 } from "@/features/agents/operations/fleetLifecycleWorkflow";
 
@@ -40,6 +41,9 @@ describe("fleetLifecycleWorkflow", () => {
   });
 
   it("maps reconcile wait result ok/error to idle/error terminal patch", () => {
+    expect(resolveReconcileWaitOutcome("ok")).toBe("ok");
+    expect(resolveReconcileWaitOutcome("error")).toBe("error");
+    expect(resolveReconcileWaitOutcome("running")).toBeNull();
     expect(buildReconcileTerminalPatch({ outcome: "ok" })).toEqual({
       status: "idle",
       runId: null,

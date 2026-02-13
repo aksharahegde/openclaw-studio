@@ -98,7 +98,6 @@ import {
   shouldAttemptPendingSetupAutoRetry,
 } from "@/features/agents/operations/pendingSetupLifecycleWorkflow";
 import {
-  parseAgentIdFromSessionKey,
   isGatewayDisconnectLikeError,
   type EventFrame,
 } from "@/lib/gateway/GatewayClient";
@@ -144,6 +143,17 @@ import {
   mergeTranscriptEntriesWithHistory,
   type TranscriptEntry,
 } from "@/features/agents/state/transcript";
+import {
+  buildLatestUpdatePatch,
+  resolveLatestUpdateIntent,
+  resolveLatestUpdateKind,
+} from "@/features/agents/operations/latestUpdateWorkflow";
+import {
+  buildReconcileTerminalPatch,
+  resolveReconcileEligibility,
+  resolveReconcileWaitOutcome,
+  resolveSummarySnapshotIntent,
+} from "@/features/agents/operations/fleetLifecycleWorkflow";
 
 type ChatHistoryMessage = Record<string, unknown>;
 
@@ -199,18 +209,6 @@ type RenameAgentBlockState = {
 };
 
 const RESERVED_MAIN_AGENT_ID = "main";
-const SPECIAL_UPDATE_HEARTBEAT_RE = /\bheartbeat\b/i;
-const SPECIAL_UPDATE_CRON_RE = /\bcron\b/i;
-
-const resolveSpecialUpdateKind = (message: string) => {
-  const lowered = message.toLowerCase();
-  const heartbeatIndex = lowered.search(SPECIAL_UPDATE_HEARTBEAT_RE);
-  const cronIndex = lowered.search(SPECIAL_UPDATE_CRON_RE);
-  if (heartbeatIndex === -1 && cronIndex === -1) return null;
-  if (heartbeatIndex === -1) return "cron";
-  if (cronIndex === -1) return "heartbeat";
-  return cronIndex > heartbeatIndex ? "cron" : "heartbeat";
-};
 
 const buildExecApprovalFollowUpMessage = (approval: PendingExecApproval) => {
   const command = approval.command.trim();
@@ -558,8 +556,8 @@ const AgentStudioPage = () => {
   }, [faviconHref]);
 
 
-  const resolveCronJobForAgent = useCallback((jobs: CronJobSummary[], agent: AgentState) => {
-    return resolveLatestCronJobForAgent(jobs, agent.agentId);
+  const resolveCronJobForAgent = useCallback((jobs: CronJobSummary[], agentId: string) => {
+    return resolveLatestCronJobForAgent(jobs, agentId);
   }, []);
 
   const loadCronJobsForSettingsAgent = useCallback(
@@ -619,37 +617,31 @@ const AgentStudioPage = () => {
 
   const updateSpecialLatestUpdate = useCallback(
     async (agentId: string, agent: AgentState, message: string) => {
-      const key = agentId;
-      const kind = resolveSpecialUpdateKind(message);
-      if (!kind) {
-        if (agent.latestOverride || agent.latestOverrideKind) {
-          dispatch({
-            type: "updateAgent",
-            agentId: agent.agentId,
-            patch: { latestOverride: null, latestOverrideKind: null },
-          });
-        }
+      const intent = resolveLatestUpdateIntent({
+        message,
+        agentId: agent.agentId,
+        sessionKey: agent.sessionKey,
+        hasExistingOverride: Boolean(agent.latestOverride || agent.latestOverrideKind),
+      });
+      if (intent.kind === "noop") return;
+      if (intent.kind === "reset") {
+        dispatch({
+          type: "updateAgent",
+          agentId: agent.agentId,
+          patch: buildLatestUpdatePatch(""),
+        });
         return;
       }
+      const key = agentId;
       if (specialUpdateInFlightRef.current.has(key)) return;
       specialUpdateInFlightRef.current.add(key);
       try {
-        if (kind === "heartbeat") {
-          const resolvedId =
-            agent.agentId?.trim() || parseAgentIdFromSessionKey(agent.sessionKey);
-          if (!resolvedId) {
-            dispatch({
-              type: "updateAgent",
-              agentId: agent.agentId,
-              patch: { latestOverride: null, latestOverrideKind: null },
-            });
-            return;
-          }
+        if (intent.kind === "fetch-heartbeat") {
           const sessions = await client.call<SessionsListResult>("sessions.list", {
-            agentId: resolvedId,
+            agentId: intent.agentId,
             includeGlobal: false,
             includeUnknown: false,
-            limit: 48,
+            limit: intent.sessionLimit,
           });
           const entries = Array.isArray(sessions.sessions) ? sessions.sessions : [];
           const heartbeatSessions = entries.filter((entry) => {
@@ -665,35 +657,29 @@ const AgentStudioPage = () => {
             dispatch({
               type: "updateAgent",
               agentId: agent.agentId,
-              patch: { latestOverride: null, latestOverrideKind: null },
+              patch: buildLatestUpdatePatch(""),
             });
             return;
           }
           const history = await client.call<ChatHistoryResult>("chat.history", {
             sessionKey,
-            limit: 200,
+            limit: intent.historyLimit,
           });
           const content = findLatestHeartbeatResponse(history.messages ?? []) ?? "";
           dispatch({
             type: "updateAgent",
             agentId: agent.agentId,
-            patch: {
-              latestOverride: content || null,
-              latestOverrideKind: content ? "heartbeat" : null,
-            },
+            patch: buildLatestUpdatePatch(content, "heartbeat"),
           });
           return;
         }
         const cronResult = await listCronJobs(client, { includeDisabled: true });
-        const job = resolveCronJobForAgent(cronResult.jobs, agent);
+        const job = resolveCronJobForAgent(cronResult.jobs, intent.agentId);
         const content = job ? formatCronJobDisplay(job) : "";
         dispatch({
           type: "updateAgent",
           agentId: agent.agentId,
-          patch: {
-            latestOverride: content || null,
-            latestOverrideKind: content ? "cron" : null,
-          },
+          patch: buildLatestUpdatePatch(content, "cron"),
         });
       } catch (err) {
         if (!isGatewayDisconnectLikeError(err)) {
@@ -1138,22 +1124,20 @@ const AgentStudioPage = () => {
   }, [client, status]);
 
   const loadSummarySnapshot = useCallback(async () => {
-    const activeAgents = stateRef.current.agents.filter((agent) => agent.sessionCreated);
-    const sessionKeys = Array.from(
-      new Set(
-        activeAgents
-          .map((agent) => agent.sessionKey)
-          .filter((key): key is string => typeof key === "string" && key.trim().length > 0)
-      )
-    ).slice(0, 64);
-    if (sessionKeys.length === 0) return;
+    const snapshotAgents = stateRef.current.agents;
+    const summaryIntent = resolveSummarySnapshotIntent({
+      agents: snapshotAgents,
+      maxKeys: 64,
+    });
+    if (summaryIntent.kind === "skip") return;
+    const activeAgents = snapshotAgents.filter((agent) => agent.sessionCreated);
     try {
       const [statusSummary, previewResult] = await Promise.all([
         client.call<SummaryStatusSnapshot>("status", {}),
         client.call<SummaryPreviewSnapshot>("sessions.preview", {
-          keys: sessionKeys,
-          limit: 8,
-          maxChars: 240,
+          keys: summaryIntent.keys,
+          limit: summaryIntent.limit,
+          maxChars: summaryIntent.maxChars,
         }),
       ]);
       for (const entry of buildSummarySnapshotPatches({
@@ -1194,7 +1178,7 @@ const AgentStudioPage = () => {
   useEffect(() => {
     for (const agent of agents) {
       const lastMessage = agent.lastUserMessage?.trim() ?? "";
-      const kind = resolveSpecialUpdateKind(lastMessage);
+      const kind = resolveLatestUpdateKind(lastMessage);
       const key = agent.agentId;
       const marker = kind === "heartbeat" ? `${lastMessage}:${heartbeatTick}` : lastMessage;
       const previous = specialUpdateRef.current.get(key);
@@ -1379,10 +1363,13 @@ const AgentStudioPage = () => {
     if (status !== "connected") return;
     const snapshot = stateRef.current.agents;
     for (const agent of snapshot) {
-      if (agent.status !== "running") continue;
-      if (!agent.sessionCreated) continue;
+      const eligibility = resolveReconcileEligibility({
+        status: agent.status,
+        sessionCreated: agent.sessionCreated,
+        runId: agent.runId,
+      });
+      if (!eligibility.shouldCheck) continue;
       const runId = agent.runId?.trim() ?? "";
-      if (!runId) continue;
       if (reconcileRunInFlightRef.current.has(runId)) continue;
 
       reconcileRunInFlightRef.current.add(runId);
@@ -1391,8 +1378,8 @@ const AgentStudioPage = () => {
           runId,
           timeoutMs: 1,
         })) as { status?: unknown };
-        const resolved = typeof result?.status === "string" ? result.status : "";
-        if (resolved !== "ok" && resolved !== "error") {
+        const outcome = resolveReconcileWaitOutcome(result?.status);
+        if (!outcome) {
           continue;
         }
 
@@ -1405,16 +1392,10 @@ const AgentStudioPage = () => {
         dispatch({
           type: "updateAgent",
           agentId: agent.agentId,
-          patch: {
-            status: resolved === "error" ? "error" : "idle",
-            runId: null,
-            runStartedAt: null,
-            streamText: null,
-            thinkingTrace: null,
-          },
+          patch: buildReconcileTerminalPatch({ outcome }),
         });
         console.info(
-          `[agent-reconcile] ${agent.agentId} run ${runId} resolved as ${resolved}.`
+          `[agent-reconcile] ${agent.agentId} run ${runId} resolved as ${outcome}.`
         );
         void loadAgentHistory(agent.agentId);
       } catch (err) {
