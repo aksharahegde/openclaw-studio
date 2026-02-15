@@ -8,17 +8,18 @@ OpenClaw Studio is a Next.js dashboard for managing OpenClaw agents via the Open
 
 ## How Studio Connects (Read This If You Use A Phone / Remote Host)
 
-There are **two separate connections** involved:
+There are **two separate network paths** involved:
 
 1. **Your browser -> Studio** (HTTP) at `http://<studio-host>:3000`
-2. **Your browser -> OpenClaw Gateway** (WebSocket) at the configured **Gateway URL**
+2. **Your browser -> Studio** (WebSocket) at `ws(s)://<studio-host>:3000/api/gateway/ws`, then **Studio -> OpenClaw Gateway** (WebSocket) at the configured **Gateway URL**
 
 Important consequences:
-- The Gateway connection is made **from the browser**, not from the machine running `next dev`.
-- `ws://localhost:18789` (or `ws://127.0.0.1:18789`) means “connect to a gateway on the same device as the browser”.
-  - If you open Studio on your phone, `localhost` and `127.0.0.1` are your phone, not your laptop/server.
+- The upstream **Gateway URL is dialed from the Studio host**, not from your browser device.
+- `ws://localhost:18789` means “connect to a gateway on the same machine as Studio”.
+  - If Studio is running on a VPS, `localhost` is the VPS.
+  - If Studio is running on your laptop and you browse it from your phone, `localhost` is still your laptop (the Studio host).
 - Studio **persists** the Gateway URL/token under `~/.openclaw/openclaw-studio/settings.json`. Once set in the UI, this will be used on future runs and will override the default `NEXT_PUBLIC_GATEWAY_URL`.
-- If Studio is served over `https://`, the Gateway URL must be `wss://...` (browsers block `ws://` from `https://` pages).
+- If you access Studio over `https://`, the browser-side bridge is `wss://.../api/gateway/ws`. The upstream Gateway URL can be `ws://...` (local/private) or `wss://...` (recommended for remote gateways).
 
 ## Requirements
 
@@ -47,23 +48,9 @@ openclaw gateway probe
 openclaw config get gateway.auth.token
 ```
 
-### Tailnet access via Tailscale Serve (recommended)
+### Remote access (VPS, Tailscale, SSH)
 
-Most people keep the gateway bound to loopback and use Tailscale Serve on the gateway host.
-
-On the gateway host:
-```bash
-openclaw config set gateway.tailscale.mode serve
-openclaw config set gateway.auth.mode token
-```
-
-Restart your gateway. Then:
-```bash
-tailscale serve status
-```
-
-Take the HTTPS URL from `tailscale serve status` and convert it to a WebSocket URL for Studio:
-- `https://gateway-host.your-tailnet.ts.net` -> `wss://gateway-host.your-tailnet.ts.net`
+For remote access recipes and troubleshooting, see `docs/remote-access.md`.
 
 ### Install + run Studio (recommended)
 ```bash
@@ -74,21 +61,13 @@ npm run dev
 
 Open http://localhost:3000 and set:
 - Token: `openclaw config get gateway.auth.token`
-- Gateway URL: `wss://gateway-host.your-tailnet.ts.net` (tailnet via `tailscale serve`)
-- Gateway URL: `ws://localhost:18789` (local gateway)
-- Gateway URL: `ws://your-host:18789` (direct remote port, no `tailscale serve`)
+- Gateway URL: `ws://localhost:18789` (gateway runs on the same machine as Studio)
+- Gateway URL: `wss://gateway-host.your-tailnet.ts.net` (remote gateway via Tailscale Serve)
+- Gateway URL: `ws://gateway-host:18789` (remote gateway reachable from the Studio host)
 
 Notes:
-- If Studio is served over `https://`, the gateway URL must be `wss://...` (browsers block `ws://` from `https://` pages).
-- If you browse Studio from another device (phone/tablet), do not use `ws://localhost:18789` unless the gateway is running on that device. Use a reachable host (LAN IP/DNS), `wss://...` via Tailscale Serve, or an SSH tunnel.
-
-### SSH tunneling (alternative)
-
-If you prefer SSH tunneling to a remote host:
-```bash
-ssh -L 18789:127.0.0.1:18789 user@your-host
-```
-Then connect Studio to `ws://localhost:18789`.
+- If the gateway rejects insecure origins (for example `INVALID_REQUEST ... control ui requires HTTPS or localhost (secure context)`), use `ws://localhost:...` for local gateways or `wss://...` for remote gateways.
+- When Studio is on a VPS, `ws://localhost:18789` connects to the VPS-local gateway even if you're browsing Studio from a phone/tablet.
 
 ### Install (manual)
 ```bash
@@ -145,14 +124,7 @@ Paths and key settings:
 
 ## Troubleshooting
 
-- **Missing config**: Run `openclaw onboard` or set `OPENCLAW_CONFIG_PATH`
-- **Gateway unreachable**: Confirm the gateway is running and `NEXT_PUBLIC_GATEWAY_URL` matches
-- **Auth errors**: Studio currently prompts for a token. Check `gateway.auth.mode` is `token` and `gateway.auth.token` is set in `openclaw.json` (or run `openclaw config get gateway.auth.token`).
-- **Secure-context connect errors** (for example `INVALID_REQUEST ... control ui requires HTTPS or localhost (secure context)`): use `ws://localhost:18789` for local gateways instead of `ws://127.0.0.1:18789`, or use `wss://...` when connecting over HTTPS.
-- **UI loads but no agents show up** (common when browsing from a phone):
-  - Check the Gateway URL shown in Studio. If it is `ws://localhost:18789`, that will only work when browsing Studio on the same machine running the gateway (or via an SSH tunnel).
-  - If you set a Gateway URL once, it is persisted in `~/.openclaw/openclaw-studio/settings.json`. Update it in the UI (or delete/reset the file) if you moved hosts.
-- **Still stuck**: Run `npx -y openclaw-studio@latest doctor --check` (and `--fix --force-settings` to safely rewrite Studio settings).
+See `docs/remote-access.md` for VPS/Tailscale/SSH recipes and a troubleshooting checklist (including TLS `EPROTO` errors, path-prefix asset issues, and missing-token errors).
 
 ## Architecture
 
