@@ -218,7 +218,7 @@ Stream handling (high-level):
 - `assistant`: merges `data.delta` into a live `streamText` for the UI.
 - reasoning stream (anything that is not `assistant`, `tool`, `lifecycle` and matches hints like `reason`/`think`/`analysis`/`trace`): merged into `thinkingTrace`.
 - `tool`: formats tool call and tool result lines using `[[tool]]` and `[[tool-result]]`.
-- `lifecycle`: start/end/error transitions; if a run ends without chat events, Studio may “flush” the last streamed assistant text as a final transcript entry.
+- `lifecycle`: start/end/error transitions; if a run reaches `end` without chat final events, Studio may flush the last streamed assistant text as a fallback final transcript entry.
 
 Code:
 - Runtime agent stream merge + append: `src/features/agents/state/gatewayRuntimeEventHandler.ts`
@@ -238,6 +238,12 @@ Rendering pipeline:
 - UI toggles that change rendering:
   - `showThinkingTraces`: hides/shows `[[trace]]` thinking entries.
   - `toolCallingEnabled`: when off, tool lines are hidden and some exec tool results may be shown as assistant text.
+
+### Rendering contract
+
+- Assistant markdown renders as assistant markdown. Studio does not wrap normal assistant markdown in a synthetic `Output` container.
+- Tool cards render only from explicit marker lines: `[[tool]]` and `[[tool-result]]`.
+- List-marker visibility comes from chat markdown styles in `src/app/styles/markdown.css`; stream parsing does not invent list bullets.
 
 Files:
 - Chat panel UI: `src/features/agents/components/AgentChatPanel.tsx`
