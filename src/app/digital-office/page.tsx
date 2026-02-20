@@ -1,6 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { GatewayConnectScreen } from "@/features/agents/components/GatewayConnectScreen";
+import { createStudioSettingsCoordinator } from "@/lib/studio/coordinator";
+import { buildAgentMainSessionKey, useGatewayConnection } from "@/lib/gateway/GatewayClient";
 import Link from "next/link";
 import Image from "next/image";
 import { ArrowLeft, CircleHelp, Laptop, Search, UserRound, UsersRound, Video } from "lucide-react";
@@ -20,6 +23,41 @@ type OfficeAgent = {
   status: AgentStatus;
   activeTask: string;
   statusForMins: number;
+};
+
+type AgentListEntry = {
+  id: string;
+  name?: string;
+  identity?: {
+    name?: string;
+  };
+};
+
+type SessionListEntry = {
+  key?: string;
+  updatedAt?: number | null;
+  modelProvider?: string | null;
+};
+
+type StatusSnapshot = {
+  sessions?: {
+    recent?: Array<{ key?: string; updatedAt?: number | null }>;
+    byAgent?: Array<{
+      agentId?: string;
+      recent?: Array<{ key?: string; updatedAt?: number | null }>;
+    }>;
+  };
+  runs?: {
+    active?: Array<{ sessionKey?: string }>;
+    byAgent?: Array<{
+      agentId?: string;
+      active?: Array<{ sessionKey?: string }>;
+    }>;
+  };
+  agents?: Array<{
+    id?: string;
+    status?: string;
+  }>;
 };
 
 const STATUS_META: Record<
@@ -64,21 +102,47 @@ const STATUS_META: Record<
 };
 
 const STATUSES: AgentStatus[] = ["working", "idle", "meeting", "offline", "needs-help"];
+const POLL_INTERVAL_MS = 30_000;
+const ACTIVE_WINDOW_MS = 2 * 60_000;
 
-const AGENTS: OfficeAgent[] = [
-  { id: "a01", name: "Mira", role: "Planner", team: "Strategy", project: "Atlas", timezone: "PT", status: "working", activeTask: "Prioritizing backlog", statusForMins: 17 },
-  { id: "a02", name: "Noah", role: "Builder", team: "Execution", project: "Atlas", timezone: "ET", status: "meeting", activeTask: "Daily sync", statusForMins: 8 },
-  { id: "a03", name: "Ari", role: "Analyst", team: "Insights", project: "Nova", timezone: "CET", status: "idle", activeTask: "Awaiting assignment", statusForMins: 13 },
-  { id: "a04", name: "Tess", role: "Researcher", team: "Insights", project: "Nova", timezone: "PT", status: "needs-help", activeTask: "Blocked on data source", statusForMins: 21 },
-  { id: "a05", name: "Kian", role: "Operator", team: "Execution", project: "Helix", timezone: "ET", status: "working", activeTask: "Deploying patch", statusForMins: 25 },
-  { id: "a06", name: "Leah", role: "Coordinator", team: "Strategy", project: "Helix", timezone: "GMT", status: "offline", activeTask: "Offline", statusForMins: 44 },
-  { id: "a07", name: "Zara", role: "QA", team: "Execution", project: "Nova", timezone: "PT", status: "working", activeTask: "Regression pass", statusForMins: 5 },
-  { id: "a08", name: "Jude", role: "Support", team: "Ops", project: "Atlas", timezone: "IST", status: "idle", activeTask: "Queue monitoring", statusForMins: 11 },
-  { id: "a09", name: "Elio", role: "Designer", team: "Experience", project: "Helix", timezone: "ET", status: "meeting", activeTask: "Review session", statusForMins: 14 },
-  { id: "a10", name: "Rae", role: "Manager", team: "Ops", project: "Atlas", timezone: "PT", status: "working", activeTask: "Escalation triage", statusForMins: 32 },
-  { id: "a11", name: "Bea", role: "Writer", team: "Experience", project: "Nova", timezone: "GMT", status: "working", activeTask: "Drafting brief", statusForMins: 9 },
-  { id: "a12", name: "Ivo", role: "DevRel", team: "Experience", project: "Helix", timezone: "CET", status: "offline", activeTask: "Offline", statusForMins: 78 },
-];
+const normalizeTimestamp = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  return null;
+};
+
+const resolveAgentName = (agent: AgentListEntry): string => {
+  const identityName = agent.identity?.name?.trim();
+  if (identityName) return identityName;
+  const listedName = agent.name?.trim();
+  if (listedName) return listedName;
+  return agent.id;
+};
+
+const inferOfficeStatus = (params: {
+  statusText: string;
+  isRunning: boolean;
+  updatedAt: number | null;
+  now: number;
+}): AgentStatus => {
+  const statusText = params.statusText;
+  if (
+    statusText.includes("approval") ||
+    statusText.includes("needs_help") ||
+    statusText.includes("needs-help") ||
+    statusText.includes("awaiting_user_input") ||
+    statusText.includes("blocked")
+  ) {
+    return "needs-help";
+  }
+  if (statusText.includes("meeting")) return "meeting";
+  if (params.isRunning || statusText.includes("running") || statusText.includes("working")) {
+    return "working";
+  }
+  if (typeof params.updatedAt === "number" && params.now - params.updatedAt <= ACTIVE_WINDOW_MS) {
+    return "idle";
+  }
+  return "offline";
+};
 
 const GROUP_BY_FIELD: Record<GroupMode, keyof Pick<OfficeAgent, "team" | "project" | "timezone">> = {
   team: "team",
@@ -87,20 +151,146 @@ const GROUP_BY_FIELD: Record<GroupMode, keyof Pick<OfficeAgent, "team" | "projec
 };
 
 export default function DigitalOfficePage() {
+  const [settingsCoordinator] = useState(() => createStudioSettingsCoordinator());
+  const {
+    client,
+    status,
+    gatewayUrl,
+    token,
+    localGatewayDefaults,
+    error: gatewayError,
+    connect,
+    useLocalGatewayDefaults,
+    setGatewayUrl,
+    setToken,
+  } = useGatewayConnection(settingsCoordinator);
+
+  const [agents, setAgents] = useState<OfficeAgent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<AgentStatus | "all">("all");
   const [groupBy, setGroupBy] = useState<GroupMode>("team");
   const [density, setDensity] = useState<DensityMode>("desk");
-  const [focused, setFocused] = useState<OfficeAgent | null>(AGENTS[0] ?? null);
+  const [focused, setFocused] = useState<OfficeAgent | null>(null);
+
+  const fetchOffice = useCallback(async () => {
+    if (status !== "connected") return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const [agentsResultRaw, statusSnapshotRaw] = await Promise.all([
+        client.call("agents.list", {}),
+        client.call("status", {}),
+      ]);
+      const agentsResult = agentsResultRaw as { agents?: AgentListEntry[]; mainKey?: string };
+      const statusSnapshot = statusSnapshotRaw as StatusSnapshot;
+      const listedAgents = Array.isArray(agentsResult.agents) ? agentsResult.agents : [];
+      const mainKey = typeof agentsResult.mainKey === "string" ? agentsResult.mainKey.trim() : "main";
+      const now = Date.now();
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Local";
+
+      const updatedAtBySession = new Map<string, number>();
+      for (const entry of statusSnapshot.sessions?.recent ?? []) {
+        const key = entry?.key?.trim() ?? "";
+        const updatedAt = normalizeTimestamp(entry?.updatedAt);
+        if (!key || updatedAt === null) continue;
+        updatedAtBySession.set(key, updatedAt);
+      }
+      for (const agentGroup of statusSnapshot.sessions?.byAgent ?? []) {
+        for (const entry of agentGroup?.recent ?? []) {
+          const key = entry?.key?.trim() ?? "";
+          const updatedAt = normalizeTimestamp(entry?.updatedAt);
+          if (!key || updatedAt === null) continue;
+          const current = updatedAtBySession.get(key) ?? 0;
+          if (updatedAt > current) updatedAtBySession.set(key, updatedAt);
+        }
+      }
+
+      const runningSessionKeys = new Set<string>();
+      for (const run of statusSnapshot.runs?.active ?? []) {
+        const key = run?.sessionKey?.trim() ?? "";
+        if (key) runningSessionKeys.add(key);
+      }
+      for (const group of statusSnapshot.runs?.byAgent ?? []) {
+        for (const run of group?.active ?? []) {
+          const key = run?.sessionKey?.trim() ?? "";
+          if (key) runningSessionKeys.add(key);
+        }
+      }
+
+      const nextAgents = await Promise.all(
+        listedAgents.map(async (agent): Promise<OfficeAgent> => {
+          const agentId = agent.id.trim();
+          const sessionKey = buildAgentMainSessionKey(agentId, mainKey);
+          const sessionsResult = (await client.call("sessions.list", {
+            agentId,
+            includeGlobal: false,
+            includeUnknown: false,
+            search: sessionKey,
+            limit: 5,
+          })) as { sessions?: SessionListEntry[] };
+          const sessions = Array.isArray(sessionsResult.sessions) ? sessionsResult.sessions : [];
+          const mainSession = sessions.find((entry) => (entry.key?.trim() ?? "") === sessionKey) ?? null;
+          const updatedAt = normalizeTimestamp(mainSession?.updatedAt) ?? updatedAtBySession.get(sessionKey) ?? null;
+          const rawStatus =
+            (statusSnapshot.agents ?? [])
+              .find((entry) => entry.id?.trim() === agentId)
+              ?.status?.trim()
+              .toLowerCase() ?? "";
+          const mappedStatus = inferOfficeStatus({
+            statusText: rawStatus,
+            isRunning: runningSessionKeys.has(sessionKey),
+            updatedAt,
+            now,
+          });
+          return {
+            id: agentId,
+            name: resolveAgentName(agent),
+            role: "OpenClaw Agent",
+            team: "Operations",
+            project: mainSession?.modelProvider?.trim() || "General",
+            timezone,
+            status: mappedStatus,
+            activeTask: mappedStatus === "offline" ? "No recent activity" : `Session: ${sessionKey}`,
+            statusForMins:
+              typeof updatedAt === "number" && updatedAt > 0
+                ? Math.max(1, Math.floor((now - updatedAt) / 60_000))
+                : 0,
+          };
+        })
+      );
+
+      nextAgents.sort((left, right) => left.name.localeCompare(right.name));
+      setAgents(nextAgents);
+    } catch (err) {
+      setAgents([]);
+      setLoadError(err instanceof Error ? err.message : "Failed to load digital office data.");
+    } finally {
+      setLoading(false);
+    }
+  }, [client, status]);
+
+  useEffect(() => {
+    void fetchOffice();
+  }, [fetchOffice]);
+
+  useEffect(() => {
+    if (status !== "connected") return;
+    const interval = setInterval(() => {
+      void fetchOffice();
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [fetchOffice, status]);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return AGENTS.filter((agent) => {
+    return agents.filter((agent) => {
       if (statusFilter !== "all" && agent.status !== statusFilter) return false;
       if (!needle) return true;
       return [agent.name, agent.role, agent.team, agent.project, agent.activeTask].join(" ").toLowerCase().includes(needle);
     });
-  }, [query, statusFilter]);
+  }, [agents, query, statusFilter]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, OfficeAgent[]>();
@@ -122,11 +312,22 @@ export default function DigitalOfficePage() {
       offline: 0,
       "needs-help": 0,
     };
-    for (const agent of AGENTS) {
+    for (const agent of agents) {
       map[agent.status] += 1;
     }
     return map;
-  }, []);
+  }, [agents]);
+
+  useEffect(() => {
+    if (!focused) {
+      setFocused(filtered[0] ?? null);
+      return;
+    }
+    const refreshed = filtered.find((entry) => entry.id === focused.id) ?? null;
+    setFocused(refreshed ?? (filtered[0] ?? null));
+  }, [filtered, focused]);
+
+  const notConnected = status !== "connected";
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -146,7 +347,22 @@ export default function DigitalOfficePage() {
       </header>
 
       <main className="min-h-0 flex-1 p-4">
-        <div className="mx-auto grid h-[calc(100vh-7.5rem)] max-w-[1580px] grid-cols-1 gap-3 xl:grid-cols-[300px_minmax(0,1fr)_320px]">
+        {notConnected ? (
+          <div className="mx-auto flex min-h-0 w-full max-w-[820px] flex-1 flex-col gap-5">
+            <GatewayConnectScreen
+              gatewayUrl={gatewayUrl}
+              token={token}
+              localGatewayDefaults={localGatewayDefaults}
+              status={status}
+              error={gatewayError}
+              onGatewayUrlChange={setGatewayUrl}
+              onTokenChange={setToken}
+              onUseLocalDefaults={useLocalGatewayDefaults}
+              onConnect={() => void connect()}
+            />
+          </div>
+        ) : (
+          <div className="mx-auto grid h-[calc(100vh-7.5rem)] max-w-[1580px] grid-cols-1 gap-3 xl:grid-cols-[300px_minmax(0,1fr)_320px]">
           <aside className="glass-panel ui-panel ui-scroll min-h-0 overflow-auto p-3">
             <h2 className="type-secondary-heading">Controls</h2>
             <div className="mt-3 space-y-3">
@@ -185,6 +401,8 @@ export default function DigitalOfficePage() {
                 </div>
               ))}
             </div>
+            {loading ? <p className="mt-3 text-xs text-muted-foreground">Syncing live office view...</p> : null}
+            {loadError ? <p className="mt-3 text-xs text-destructive">{loadError}</p> : null}
             <h3 className="mt-6 type-secondary-heading">User Flow</h3>
             <ol className="mt-2 space-y-1 text-sm text-muted-foreground">
               <li>1. Scan status summary and alert counts.</li>
@@ -254,6 +472,11 @@ export default function DigitalOfficePage() {
                   </div>
                 </article>
               ))}
+              {!loading && filtered.length === 0 ? (
+                <div className="ui-card rounded-xl p-4 text-sm text-muted-foreground">
+                  No agents match your current filters.
+                </div>
+              ) : null}
             </div>
           </section>
 
@@ -313,6 +536,7 @@ export default function DigitalOfficePage() {
             )}
           </aside>
         </div>
+        )}
       </main>
     </div>
   );
