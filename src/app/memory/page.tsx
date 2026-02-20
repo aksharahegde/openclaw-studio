@@ -7,13 +7,12 @@ import remarkGfm from "remark-gfm";
 import { ArrowLeft, FileText, RefreshCw, Search } from "lucide-react";
 import { GatewayConnectScreen } from "@/features/agents/components/GatewayConnectScreen";
 import { useGatewayConnection } from "@/lib/gateway/GatewayClient";
-import { readGatewayAgentFile } from "@/lib/gateway/agentFiles";
-import { buildHistoryLines, type ChatHistoryMessage } from "@/features/agents/state/runtimeEventBridge";
 import { createStudioSettingsCoordinator } from "@/lib/studio/coordinator";
+import { fetchJson } from "@/lib/http";
 
 const POLL_INTERVAL_MS = 45_000;
-const HISTORY_LIMIT = 80;
-const HISTORY_PREVIEW_LINES = 120;
+const DEFAULT_FILE_PATH = "memory";
+const DEFAULT_PATTERN = "^\\d{4}-\\d{2}-\\d{2}\\.md$";
 
 type AgentListEntry = {
   id: string;
@@ -24,10 +23,13 @@ type AgentListEntry = {
 };
 
 type MemoryDoc = {
+  id: string;
   agentId: string;
   agentName: string;
-  memoryContent: string;
-  conversationPreview: string[];
+  fileName: string;
+  relativePath: string;
+  content: string;
+  wordCount: number;
   searchText: string;
 };
 
@@ -37,12 +39,6 @@ const resolveAgentName = (agent: AgentListEntry): string => {
   const listedName = agent.name?.trim();
   if (listedName) return listedName;
   return agent.id;
-};
-
-const formatWordCount = (value: string): number => {
-  const cleaned = value.trim();
-  if (!cleaned) return 0;
-  return cleaned.split(/\s+/).length;
 };
 
 export default function MemoryPage() {
@@ -62,10 +58,15 @@ export default function MemoryPage() {
 
   const [query, setQuery] = useState("");
   const [agentFilter, setAgentFilter] = useState("all");
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [docs, setDocs] = useState<MemoryDoc[]>([]);
+
+  const [filePathDraft, setFilePathDraft] = useState(DEFAULT_FILE_PATH);
+  const [patternDraft, setPatternDraft] = useState(DEFAULT_PATTERN);
+  const [filePath, setFilePath] = useState(DEFAULT_FILE_PATH);
+  const [pattern, setPattern] = useState(DEFAULT_PATTERN);
 
   const fetchMemoryDocs = useCallback(async () => {
     if (status !== "connected") return;
@@ -74,40 +75,44 @@ export default function MemoryPage() {
     try {
       const listed = (await client.call("agents.list", {})) as {
         agents?: AgentListEntry[];
-        mainKey?: string;
       };
-      const agents = Array.isArray(listed.agents) ? listed.agents : [];
-      const mainKey = listed.mainKey?.trim() || "main";
-      const loadedDocs = await Promise.all(
-        agents.map(async (agent) => {
-          const agentName = resolveAgentName(agent);
-          const sessionKey = `agent:${agent.id}:${mainKey}`;
-          const [memoryFile, historyResult] = await Promise.all([
-            readGatewayAgentFile({ client, agentId: agent.id, name: "MEMORY.md" }),
-            client
-              .call<{ messages?: ChatHistoryMessage[] }>("chat.history", {
-                sessionKey,
-                limit: HISTORY_LIMIT,
-              })
-              .catch(() => ({ messages: [] })),
-          ]);
-          const messages = Array.isArray(historyResult.messages) ? historyResult.messages : [];
-          const historyLines = buildHistoryLines(messages).lines.filter((line) => line.trim().length > 0);
-          const conversationPreview = historyLines.slice(-HISTORY_PREVIEW_LINES);
-          const memoryContent = memoryFile.content.trim();
-          const searchText = [agentName, agent.id, memoryContent, historyLines.join("\n")]
+      const agents = (Array.isArray(listed.agents) ? listed.agents : []).map((agent) => ({
+        id: agent.id,
+        name: resolveAgentName(agent),
+      }));
+
+      const response = await fetchJson<{
+        docs?: Array<{
+          id: string;
+          agentId: string;
+          agentName: string;
+          fileName: string;
+          relativePath: string;
+          content: string;
+          wordCount: number;
+        }>;
+      }>("/api/memory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agents,
+          filePath,
+          pattern,
+        }),
+      });
+
+      const loadedDocs = (Array.isArray(response.docs) ? response.docs : [])
+        .map((doc) => ({
+          ...doc,
+          searchText: [doc.agentName, doc.agentId, doc.fileName, doc.relativePath, doc.content]
             .join("\n")
-            .toLowerCase();
-          return {
-            agentId: agent.id,
-            agentName,
-            memoryContent,
-            conversationPreview,
-            searchText,
-          } satisfies MemoryDoc;
-        })
-      );
-      loadedDocs.sort((left, right) => left.agentName.localeCompare(right.agentName));
+            .toLowerCase(),
+        }))
+        .sort((left, right) => {
+          if (left.fileName !== right.fileName) return right.fileName.localeCompare(left.fileName);
+          return left.agentName.localeCompare(right.agentName);
+        });
+
       setDocs(loadedDocs);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load memories.");
@@ -115,7 +120,7 @@ export default function MemoryPage() {
     } finally {
       setLoading(false);
     }
-  }, [client, status]);
+  }, [client, filePath, pattern, status]);
 
   useEffect(() => {
     void fetchMemoryDocs();
@@ -141,17 +146,27 @@ export default function MemoryPage() {
 
   useEffect(() => {
     if (filteredDocs.length === 0) {
-      setSelectedAgentId(null);
+      setSelectedDocId(null);
       return;
     }
-    if (selectedAgentId && filteredDocs.some((doc) => doc.agentId === selectedAgentId)) return;
-    setSelectedAgentId(filteredDocs[0]?.agentId ?? null);
-  }, [filteredDocs, selectedAgentId]);
+    if (selectedDocId && filteredDocs.some((doc) => doc.id === selectedDocId)) return;
+    setSelectedDocId(filteredDocs[0]?.id ?? null);
+  }, [filteredDocs, selectedDocId]);
 
   const selectedDoc = useMemo(() => {
-    if (!selectedAgentId) return null;
-    return filteredDocs.find((doc) => doc.agentId === selectedAgentId) ?? null;
-  }, [filteredDocs, selectedAgentId]);
+    if (!selectedDocId) return null;
+    return filteredDocs.find((doc) => doc.id === selectedDocId) ?? null;
+  }, [filteredDocs, selectedDocId]);
+
+  const agentOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const doc of docs) {
+      if (!seen.has(doc.agentId)) {
+        seen.set(doc.agentId, doc.agentName);
+      }
+    }
+    return Array.from(seen.entries()).map(([id, name]) => ({ id, name }));
+  }, [docs]);
 
   const notConnected = status !== "connected";
 
@@ -200,8 +215,38 @@ export default function MemoryPage() {
             />
           </div>
         ) : (
-          <div className="mx-auto grid h-[calc(100vh-7.5rem)] w-full max-w-[1400px] grid-cols-1 gap-3 lg:grid-cols-[330px_minmax(0,1fr)]">
+          <div className="mx-auto grid h-[calc(100vh-7.5rem)] w-full max-w-[1400px] grid-cols-1 gap-3 lg:grid-cols-[360px_minmax(0,1fr)]">
             <aside className="glass-panel ui-panel min-h-0 overflow-hidden p-3">
+              <div className="mb-3 grid grid-cols-1 gap-2">
+                <input
+                  type="text"
+                  value={filePathDraft}
+                  onChange={(event) => setFilePathDraft(event.target.value)}
+                  placeholder="filepath (e.g. memory)"
+                  className="ui-input h-9 w-full rounded-md px-3 text-xs"
+                  data-testid="memory-filepath-input"
+                />
+                <input
+                  type="text"
+                  value={patternDraft}
+                  onChange={(event) => setPatternDraft(event.target.value)}
+                  placeholder="pattern (regex)"
+                  className="ui-input h-9 w-full rounded-md px-3 text-xs"
+                  data-testid="memory-pattern-input"
+                />
+                <button
+                  type="button"
+                  className="ui-btn-secondary px-3 py-2 text-xs"
+                  onClick={() => {
+                    setFilePath(filePathDraft.trim() || DEFAULT_FILE_PATH);
+                    setPattern(patternDraft.trim() || DEFAULT_PATTERN);
+                  }}
+                  data-testid="memory-source-apply"
+                >
+                  Apply file source
+                </button>
+              </div>
+
               <div className="mb-3">
                 <div className="relative">
                   <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -226,15 +271,15 @@ export default function MemoryPage() {
                 >
                   All agents
                 </button>
-                {docs.map((doc) => (
+                {agentOptions.map((agent) => (
                   <button
-                    key={doc.agentId}
+                    key={agent.id}
                     type="button"
-                    onClick={() => setAgentFilter(doc.agentId)}
-                    className={`ui-badge border px-2 py-1 text-[11px] ${agentFilter === doc.agentId ? "border-foreground/45 bg-foreground/10 text-foreground" : "border-border/70 text-muted-foreground"}`}
-                    data-testid={`memory-filter-agent-${doc.agentId}`}
+                    onClick={() => setAgentFilter(agent.id)}
+                    className={`ui-badge border px-2 py-1 text-[11px] ${agentFilter === agent.id ? "border-foreground/45 bg-foreground/10 text-foreground" : "border-border/70 text-muted-foreground"}`}
+                    data-testid={`memory-filter-agent-${agent.id}`}
                   >
-                    {doc.agentName}
+                    {agent.name}
                   </button>
                 ))}
               </div>
@@ -246,28 +291,28 @@ export default function MemoryPage() {
 
               <div className="ui-scroll flex min-h-0 flex-1 flex-col gap-2 overflow-auto pr-1">
                 {filteredDocs.map((doc) => {
-                  const isActive = doc.agentId === selectedAgentId;
-                  const words = formatWordCount(`${doc.memoryContent}\n${doc.conversationPreview.join(" ")}`);
+                  const isActive = doc.id === selectedDocId;
                   return (
                     <button
-                      key={doc.agentId}
+                      key={doc.id}
                       type="button"
-                      onClick={() => setSelectedAgentId(doc.agentId)}
+                      onClick={() => setSelectedDocId(doc.id)}
                       className={`ui-card w-full rounded-lg border px-3 py-3 text-left transition ${
                         isActive
                           ? "border-foreground/35 bg-foreground/10"
                           : "border-border/65 bg-background/55 hover:bg-background/75"
                       }`}
-                      data-testid={`memory-doc-${doc.agentId}`}
+                      data-testid={`memory-doc-${doc.id}`}
                     >
-                      <div className="text-sm font-semibold text-foreground">{doc.agentName}</div>
-                      <div className="mt-1 font-mono text-[11px] text-muted-foreground">{doc.agentId}</div>
-                      <div className="mt-2 text-xs text-muted-foreground">{words} words</div>
+                      <div className="text-sm font-semibold text-foreground">{doc.fileName}</div>
+                      <div className="mt-1 text-xs text-muted-foreground">{doc.agentName}</div>
+                      <div className="mt-1 font-mono text-[10px] text-muted-foreground">{doc.relativePath}</div>
+                      <div className="mt-2 text-xs text-muted-foreground">{doc.wordCount} words</div>
                     </button>
                   );
                 })}
                 {filteredDocs.length === 0 && !loading ? (
-                  <div className="ui-card px-3 py-3 text-xs text-muted-foreground">No matching memories.</div>
+                  <div className="ui-card px-3 py-3 text-xs text-muted-foreground">No matching files.</div>
                 ) : null}
               </div>
             </aside>
@@ -284,36 +329,23 @@ export default function MemoryPage() {
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 text-foreground">
                         <FileText className="h-4 w-4 text-muted-foreground" />
-                        <h2 className="truncate text-lg font-semibold">Journal: {selectedDoc.agentName}</h2>
+                        <h2 className="truncate text-lg font-semibold">{selectedDoc.fileName}</h2>
                       </div>
                       <p className="mt-1 font-mono text-[11px] text-muted-foreground">
-                        MEMORY.md • {formatWordCount(selectedDoc.memoryContent)} words • {loading ? "Updating" : "Live"}
+                        {selectedDoc.relativePath} • {selectedDoc.wordCount} words • {loading ? "Updating" : "Live"}
                       </p>
                     </div>
-                    <p className="font-mono text-[11px] text-muted-foreground">{selectedDoc.agentId}</p>
+                    <p className="text-xs text-muted-foreground">{selectedDoc.agentName}</p>
                   </div>
 
                   <div className="ui-scroll min-h-0 flex-1 overflow-auto px-5 py-4">
-                    {selectedDoc.memoryContent ? (
+                    {selectedDoc.content ? (
                       <div className="agent-markdown text-sm text-foreground">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedDoc.memoryContent}</ReactMarkdown>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{selectedDoc.content}</ReactMarkdown>
                       </div>
                     ) : (
-                      <p className="text-sm text-muted-foreground">No durable memory saved yet.</p>
+                      <p className="text-sm text-muted-foreground">File is empty.</p>
                     )}
-
-                    <div className="mt-8 border-t border-border/60 pt-5">
-                      <h3 className="mb-3 font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">
-                        Conversation timeline
-                      </h3>
-                      {selectedDoc.conversationPreview.length > 0 ? (
-                        <pre className="whitespace-pre-wrap font-mono text-[12px] leading-6 text-foreground/90">
-                          {selectedDoc.conversationPreview.join("\n")}
-                        </pre>
-                      ) : (
-                        <p className="text-sm text-muted-foreground">No conversation history loaded.</p>
-                      )}
-                    </div>
                   </div>
                 </div>
               )}
