@@ -89,6 +89,14 @@ export const HeaderBar = ({
                   >
                     Task board
                   </Link>
+                  <Link
+                    href="/calendar"
+                    className="ui-btn-ghost block w-full justify-start border-transparent px-3 py-2 text-left text-xs font-medium tracking-normal text-foreground"
+                    onClick={() => setMenuOpen(false)}
+                    data-testid="calendar-nav"
+                  >
+                    Calendar
+                  </Link>
                 </div>
               ) : null}
             </div>
