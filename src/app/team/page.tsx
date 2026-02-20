@@ -139,6 +139,15 @@ const chipToneClass = (index: number): string => {
 };
 
 export default function TeamPage() {
+  useEffect(() => {
+    document.documentElement.classList.remove("dark");
+    try {
+      localStorage.setItem("theme", "light");
+    } catch {
+      // no-op
+    }
+  }, []);
+
   const [settingsCoordinator] = useState(() => createStudioSettingsCoordinator());
   const {
     client,
@@ -303,7 +312,7 @@ export default function TeamPage() {
   const notConnected = status !== "connected";
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
+    <div className="flex min-h-screen flex-col bg-slate-50">
       <header className="glass-panel fade-up ui-panel ui-topbar relative z-[180] px-3.5 py-2">
         <div className="flex items-center justify-between gap-4">
           <div className="flex min-w-0 items-center gap-3">
@@ -348,24 +357,24 @@ export default function TeamPage() {
           </div>
         ) : (
           <div className="mx-auto w-full max-w-[1220px] space-y-5">
-            <section className="relative overflow-hidden rounded-2xl border border-border/60 bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.08),transparent_34%),radial-gradient(circle_at_80%_30%,rgba(217,70,239,0.08),transparent_35%),linear-gradient(180deg,rgba(2,6,23,0.7),rgba(2,6,23,0.94))] px-4 py-8 md:px-8">
+            <section className="relative overflow-hidden rounded-2xl border border-slate-200 bg-[radial-gradient(circle_at_top,rgba(59,130,246,0.14),transparent_34%),radial-gradient(circle_at_80%_30%,rgba(217,70,239,0.12),transparent_35%),linear-gradient(180deg,#ffffff,#f8fafc)] px-4 py-8 md:px-8">
               <div className="mx-auto max-w-[920px] text-center">
-                <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
+                <p className="font-mono text-[11px] uppercase tracking-[0.2em] text-slate-500">
                   Team Topology
                 </p>
-                <h2 className="mt-2 text-3xl font-semibold tracking-tight text-foreground md:text-5xl">
+                <h2 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900 md:text-5xl">
                   Meet The Team
                 </h2>
-                <p className="mt-2 text-sm text-muted-foreground">
+                <p className="mt-2 text-sm text-slate-600">
                   {rows.length} AI agents, with {totalSubagents} recurring subagent session
                   {totalSubagents === 1 ? "" : "s"} actively supporting execution.
                 </p>
-                {loading ? <p className="mt-2 font-mono text-xs text-muted-foreground">Syncing live status...</p> : null}
+                {loading ? <p className="mt-2 font-mono text-xs text-slate-500">Syncing live status...</p> : null}
                 {error ? <p className="mt-2 text-sm text-destructive">{error}</p> : null}
               </div>
 
               {!loading && rows.length === 0 ? (
-                <div className="mx-auto mt-8 max-w-[760px] rounded-xl border border-border/70 bg-background/40 px-5 py-6 text-sm text-muted-foreground">
+                <div className="mx-auto mt-8 max-w-[760px] rounded-xl border border-slate-200 bg-white px-5 py-6 text-sm text-slate-600">
                   No agents found. Create agents in Studio to build your team structure.
                 </div>
               ) : null}
@@ -373,7 +382,7 @@ export default function TeamPage() {
               {leadRow ? (
                 <div className="mx-auto mt-8 max-w-[760px]">
                   <article
-                    className={`rounded-xl border bg-background/35 p-4 md:p-5 ${cardToneClass(0)}`}
+                    className={`rounded-xl border bg-white/95 p-4 md:p-5 ${cardToneClass(0)}`}
                     data-testid="team-lead-card"
                   >
                     <div className="flex items-start gap-3">
@@ -382,15 +391,15 @@ export default function TeamPage() {
                       </div>
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="text-lg font-semibold text-foreground">{leadRow.name}</h3>
-                          <span className="font-mono text-[10px] text-muted-foreground">{leadRow.agentId}</span>
+                          <h3 className="text-lg font-semibold text-slate-900">{leadRow.name}</h3>
+                          <span className="font-mono text-[10px] text-slate-500">{leadRow.agentId}</span>
                           <span
                             className={`inline-flex items-center rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] ${statusBadgeClass(leadRow.status)}`}
                           >
                             {leadRow.status}
                           </span>
                         </div>
-                        <p className="mt-1 text-sm text-muted-foreground">
+                        <p className="mt-1 text-sm text-slate-600">
                           Lead coordinator for this team. {leadRow.subagents.length} regular subagent
                           session{leadRow.subagents.length === 1 ? "" : "s"}.
                         </p>
@@ -409,12 +418,12 @@ export default function TeamPage() {
                     </div>
                   </article>
 
-                  <div className="mx-auto my-5 h-7 w-px bg-border/70" />
+                  <div className="mx-auto my-5 h-7 w-px bg-slate-300" />
                   <div className="mx-auto flex w-full max-w-[560px] items-center justify-between gap-2">
                     <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-emerald-300">
                       Input Signal
                     </span>
-                    <div className="h-px flex-1 bg-border/70" />
+                    <div className="h-px flex-1 bg-slate-300" />
                     <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-sky-300">
                       Output Action
                     </span>
@@ -427,18 +436,18 @@ export default function TeamPage() {
                   {leadSubagents.map((subagent, index) => (
                     <article
                       key={subagent.sessionKey}
-                      className={`rounded-xl border bg-background/35 p-3 ${cardToneClass(index + 1)}`}
+                      className={`rounded-xl border bg-white/95 p-3 ${cardToneClass(index + 1)}`}
                       data-testid="team-subagent-card"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-sm font-semibold text-foreground">{subagent.name}</p>
+                        <p className="truncate text-sm font-semibold text-slate-900">{subagent.name}</p>
                         <span
                           className={`inline-flex items-center rounded-full border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-[0.08em] ${statusBadgeClass(subagent.status)}`}
                         >
                           {subagent.status}
                         </span>
                       </div>
-                      <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                      <p className="mt-1 line-clamp-2 text-xs text-slate-600">
                         Session key: {subagent.sessionKey}
                       </p>
                       <div className="mt-2 flex flex-wrap gap-1">
@@ -449,7 +458,7 @@ export default function TeamPage() {
                           execution
                         </span>
                       </div>
-                      <p className="mt-2 font-mono text-[10px] text-muted-foreground">
+                      <p className="mt-2 font-mono text-[10px] text-slate-500">
                         {formatUpdated(subagent.updatedAt)}
                       </p>
                     </article>
@@ -460,23 +469,23 @@ export default function TeamPage() {
               {secondaryRow ? (
                 <div className="mx-auto mt-7 max-w-[560px]">
                   <div className="mx-auto mb-3 flex w-full items-center gap-2">
-                    <div className="h-px flex-1 bg-border/70" />
-                    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                    <div className="h-px flex-1 bg-slate-300" />
+                    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">
                       Meta Layer
                     </span>
-                    <div className="h-px flex-1 bg-border/70" />
+                    <div className="h-px flex-1 bg-slate-300" />
                   </div>
-                  <article className={`rounded-xl border bg-background/35 p-4 ${cardToneClass(4)}`}>
+                  <article className={`rounded-xl border bg-white/95 p-4 ${cardToneClass(4)}`}>
                     <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="text-base font-semibold text-foreground">{secondaryRow.name}</h3>
-                      <span className="font-mono text-[10px] text-muted-foreground">{secondaryRow.agentId}</span>
+                      <h3 className="text-base font-semibold text-slate-900">{secondaryRow.name}</h3>
+                      <span className="font-mono text-[10px] text-slate-500">{secondaryRow.agentId}</span>
                       <span
                         className={`inline-flex items-center rounded-full border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] ${statusBadgeClass(secondaryRow.status)}`}
                       >
                         {secondaryRow.status}
                       </span>
                     </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
+                    <p className="mt-1 text-xs text-slate-600">
                       Reliability and guardrail layer. {formatUpdated(secondaryRow.updatedAt)}.
                     </p>
                   </article>
