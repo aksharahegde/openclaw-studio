@@ -5,8 +5,12 @@ import Link from "next/link";
 import { fetchJson } from "@/lib/http";
 import type { TaskBoardSnapshot } from "@/lib/task-board/read-model";
 import { TaskBoard as TaskBoardView } from "@/features/task-board/components/TaskBoard";
+import {
+  TaskBoardCreateModal,
+  type TaskBoardCreatePayload,
+} from "@/features/task-board/components/TaskBoardCreateModal";
 import type { StudioSettings } from "@/lib/studio/settings";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Plus } from "lucide-react";
 
 const POLL_INTERVAL_MS = 8000;
 
@@ -20,6 +24,9 @@ export default function TaskBoardPage() {
   const [vaultPathDraft, setVaultPathDraft] = useState("");
   const [savingVault, setSavingVault] = useState(false);
   const [vaultSaveError, setVaultSaveError] = useState<string | null>(null);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const fetchBoard = useCallback(async () => {
     try {
@@ -84,6 +91,33 @@ export default function TaskBoardPage() {
       setSavingVault(false);
     }
   }, [vaultPathDraft, fetchBoard]);
+
+  const handleCreateTask = useCallback(
+    async (payload: TaskBoardCreatePayload) => {
+      setCreateError(null);
+      setCreateBusy(true);
+      try {
+        await fetchJson("/api/task-board/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: payload.title,
+            status: payload.status,
+            assignee: payload.assignee,
+          }),
+        });
+        setCreateModalOpen(false);
+        await fetchBoard();
+      } catch (err) {
+        setCreateError(
+          err instanceof Error ? err.message : "Failed to create task."
+        );
+      } finally {
+        setCreateBusy(false);
+      }
+    },
+    [fetchBoard]
+  );
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -150,6 +184,18 @@ export default function TaskBoardPage() {
             <div className="mb-3 flex items-center justify-end gap-2">
               <button
                 type="button"
+                className="ui-btn-secondary inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-foreground"
+                onClick={() => {
+                  setCreateError(null);
+                  setCreateModalOpen(true);
+                }}
+                data-testid="task-board-new-task"
+              >
+                <Plus className="h-4 w-4" />
+                New task
+              </button>
+              <button
+                type="button"
                 className="ui-btn-ghost px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"
                 onClick={() => void fetchBoard()}
                 data-testid="task-board-refresh"
@@ -170,6 +216,16 @@ export default function TaskBoardPage() {
           </div>
         ) : null}
       </main>
+      <TaskBoardCreateModal
+        open={createModalOpen}
+        busy={createBusy}
+        submitError={createError}
+        onClose={() => {
+          setCreateError(null);
+          setCreateModalOpen(false);
+        }}
+        onSubmit={handleCreateTask}
+      />
     </div>
   );
 }
