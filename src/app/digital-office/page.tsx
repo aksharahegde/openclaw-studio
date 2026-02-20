@@ -1,36 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { ArrowLeft, Search } from "lucide-react";
 import { GatewayConnectScreen } from "@/features/agents/components/GatewayConnectScreen";
 import { createStudioSettingsCoordinator } from "@/lib/studio/coordinator";
 import { buildAgentMainSessionKey, useGatewayConnection } from "@/lib/gateway/GatewayClient";
-import Link from "next/link";
-import Image from "next/image";
-import { ArrowLeft, CircleHelp, Laptop, Search, UserRound, UsersRound, Video } from "lucide-react";
-import { buildAvatarDataUrl } from "@/lib/avatars/multiavatar";
 
 type AgentStatus = "working" | "idle" | "meeting" | "offline" | "needs-help";
-type GroupMode = "team" | "project" | "timezone";
-type DensityMode = "desk" | "grid";
+type GroupMode = "all" | "status";
 
 type OfficeAgent = {
   id: string;
   name: string;
   role: string;
-  team: string;
-  project: string;
-  timezone: string;
   status: AgentStatus;
-  activeTask: string;
-  statusForMins: number;
+  updatedAt: number | null;
+  sessionKey: string;
 };
 
 type AgentListEntry = {
   id: string;
   name?: string;
-  identity?: {
-    name?: string;
-  };
+  identity?: { name?: string };
 };
 
 type SessionListEntry = {
@@ -42,68 +34,33 @@ type SessionListEntry = {
 type StatusSnapshot = {
   sessions?: {
     recent?: Array<{ key?: string; updatedAt?: number | null }>;
-    byAgent?: Array<{
-      agentId?: string;
-      recent?: Array<{ key?: string; updatedAt?: number | null }>;
-    }>;
+    byAgent?: Array<{ agentId?: string; recent?: Array<{ key?: string; updatedAt?: number | null }> }>;
   };
   runs?: {
     active?: Array<{ sessionKey?: string }>;
-    byAgent?: Array<{
-      agentId?: string;
-      active?: Array<{ sessionKey?: string }>;
-    }>;
+    byAgent?: Array<{ agentId?: string; active?: Array<{ sessionKey?: string }> }>;
   };
-  agents?: Array<{
-    id?: string;
-    status?: string;
-  }>;
+  agents?: Array<{ id?: string; status?: string }>;
 };
 
-const STATUS_META: Record<
-  AgentStatus,
-  { label: string; icon: typeof Laptop; ring: string; badge: string; pulse: string }
-> = {
-  working: {
-    label: "Working",
-    icon: Laptop,
-    ring: "ring-emerald-500/70",
-    badge: "bg-emerald-500/15 text-emerald-300",
-    pulse: "shadow-[0_0_0_6px_rgba(16,185,129,0.12)]",
-  },
-  idle: {
-    label: "Idle",
-    icon: UserRound,
-    ring: "ring-amber-500/70",
-    badge: "bg-amber-500/15 text-amber-300",
-    pulse: "",
-  },
-  meeting: {
-    label: "In Meeting",
-    icon: Video,
-    ring: "ring-sky-500/70",
-    badge: "bg-sky-500/15 text-sky-300",
-    pulse: "shadow-[0_0_0_6px_rgba(14,165,233,0.1)]",
-  },
-  offline: {
-    label: "Offline",
-    icon: UsersRound,
-    ring: "ring-zinc-500/50",
-    badge: "bg-zinc-500/15 text-zinc-300",
-    pulse: "",
-  },
-  "needs-help": {
-    label: "Needs Help",
-    icon: CircleHelp,
-    ring: "ring-rose-500/80",
-    badge: "bg-rose-500/15 text-rose-300",
-    pulse: "shadow-[0_0_0_8px_rgba(244,63,94,0.16)]",
-  },
-};
-
-const STATUSES: AgentStatus[] = ["working", "idle", "meeting", "offline", "needs-help"];
 const POLL_INTERVAL_MS = 30_000;
 const ACTIVE_WINDOW_MS = 2 * 60_000;
+
+const STATUS_COLORS: Record<AgentStatus, string> = {
+  working: "#10b981",
+  idle: "#f59e0b",
+  meeting: "#3b82f6",
+  offline: "#6b7280",
+  "needs-help": "#f43f5e",
+};
+
+const STATUS_LABELS: Record<AgentStatus, string> = {
+  working: "Working",
+  idle: "Idle",
+  meeting: "In Meeting",
+  offline: "Offline",
+  "needs-help": "Needs Help",
+};
 
 const normalizeTimestamp = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
@@ -144,11 +101,257 @@ const inferOfficeStatus = (params: {
   return "offline";
 };
 
-const GROUP_BY_FIELD: Record<GroupMode, keyof Pick<OfficeAgent, "team" | "project" | "timezone">> = {
-  team: "team",
-  project: "project",
-  timezone: "timezone",
+const hashSeed = (text: string) => {
+  let h = 0;
+  for (let i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) >>> 0;
+  return h;
 };
+
+const drawRoundedRect = (
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+) => {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+};
+
+function OfficeCanvas(props: {
+  agents: OfficeAgent[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const { agents, selectedId, onSelect } = props;
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const [hoverId, setHoverId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!hostRef.current || !canvasRef.current) return;
+    const canvas = canvasRef.current;
+    const host = hostRef.current;
+
+    const resize = () => {
+      const rect = host.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      canvas.style.width = `${rect.width}px`;
+      canvas.style.height = `${rect.height}px`;
+      const ctx = canvas.getContext("2d");
+      if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    };
+
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(host);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let raf = 0;
+
+    const render = (time: number) => {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+
+      ctx.clearRect(0, 0, width, height);
+
+      for (let y = 0; y < height; y += 56) {
+        for (let x = 0; x < width; x += 56) {
+          const dark = ((x / 56 + y / 56) | 0) % 2 === 0;
+          ctx.fillStyle = dark ? "#151516" : "#231f20";
+          ctx.fillRect(x, y, 56, 56);
+        }
+      }
+
+      ctx.fillStyle = "#3d4b62";
+      ctx.fillRect(0, 0, width, 90);
+      ctx.fillStyle = "#5a6476";
+      for (let i = 0; i < 10; i += 1) {
+        ctx.fillRect(18 + i * (width / 10), 18, width / 14, 48);
+      }
+
+      const cols = Math.max(3, Math.min(8, Math.floor(width / 190)));
+      const deskGapX = width / cols;
+      const deskRows = 3;
+      const deskGapY = (height - 170) / deskRows;
+      const deskSlots: Array<{ x: number; y: number }> = [];
+      for (let r = 0; r < deskRows; r += 1) {
+        for (let c = 0; c < cols; c += 1) {
+          deskSlots.push({ x: deskGapX * c + 26, y: 130 + r * deskGapY });
+        }
+      }
+
+      for (const desk of deskSlots) {
+        ctx.fillStyle = "#78716c";
+        ctx.fillRect(desk.x, desk.y + 36, 98, 12);
+        ctx.fillStyle = "#4b4541";
+        ctx.fillRect(desk.x + 10, desk.y + 48, 8, 36);
+        ctx.fillRect(desk.x + 80, desk.y + 48, 8, 36);
+        ctx.fillStyle = "#3b82f6";
+        ctx.fillRect(desk.x + 31, desk.y + 6, 36, 24);
+        ctx.fillStyle = "#1f2937";
+        ctx.fillRect(desk.x + 44, desk.y + 30, 10, 8);
+      }
+
+      const tableX = width * 0.45;
+      const tableY = height * 0.72;
+      drawRoundedRect(ctx, tableX, tableY, 190, 95, 45);
+      ctx.fillStyle = "#6b6765";
+      ctx.fill();
+
+      const meetingAgents = agents.filter((agent) => agent.status === "meeting");
+      const nonMeeting = agents.filter((agent) => agent.status !== "meeting");
+      const ordered = [...nonMeeting, ...meetingAgents];
+      const usedPositions = new Map<string, { x: number; y: number }>();
+
+      ordered.forEach((agent, index) => {
+        let pos: { x: number; y: number };
+        if (agent.status === "meeting") {
+          const angle = (index * 0.9 + time / 4000) % (Math.PI * 2);
+          pos = {
+            x: tableX + 95 + Math.cos(angle) * 110,
+            y: tableY + 45 + Math.sin(angle) * 56,
+          };
+        } else {
+          const slot = deskSlots[index % Math.max(1, deskSlots.length)] ?? { x: 40, y: 150 };
+          const jitter = hashSeed(agent.id) % 18;
+          pos = { x: slot.x + 45 + jitter - 9, y: slot.y + 63 };
+        }
+        usedPositions.set(agent.id, pos);
+      });
+      positionsRef.current = usedPositions;
+
+      for (const agent of ordered) {
+        const pos = usedPositions.get(agent.id);
+        if (!pos) continue;
+        const statusColor = STATUS_COLORS[agent.status];
+        const pulse = 0.35 + 0.65 * ((Math.sin(time / 260 + (hashSeed(agent.id) % 12)) + 1) / 2);
+        const isSelected = selectedId === agent.id;
+
+        if (agent.status === "working") {
+          ctx.beginPath();
+          ctx.fillStyle = `rgba(16,185,129,${0.08 + pulse * 0.18})`;
+          ctx.arc(pos.x, pos.y - 14, 19 + pulse * 7, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        if (isSelected) {
+          ctx.beginPath();
+          ctx.strokeStyle = "#e5e7eb";
+          ctx.lineWidth = 2;
+          ctx.arc(pos.x, pos.y, 15, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        drawRoundedRect(ctx, pos.x - 11, pos.y - 11, 22, 22, 6);
+        ctx.fillStyle = statusColor;
+        ctx.fill();
+
+        if (agent.status === "idle") {
+          ctx.fillStyle = "rgba(255,255,255,0.2)";
+          ctx.fillRect(pos.x - 8, pos.y - 6, 16, 4);
+        }
+
+        if (agent.status === "needs-help") {
+          ctx.fillStyle = "#f9fafb";
+          ctx.font = "bold 12px monospace";
+          ctx.fillText("!", pos.x - 3, pos.y + 4);
+        }
+
+        ctx.fillStyle = statusColor;
+        ctx.font = "600 14px var(--font-mono), monospace";
+        ctx.fillText(agent.name, pos.x - 24, pos.y + 33);
+
+        ctx.beginPath();
+        ctx.fillStyle = statusColor;
+        ctx.arc(pos.x + 14, pos.y - 14, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (hoverId) {
+        const hovered = ordered.find((entry) => entry.id === hoverId);
+        const pos = hoverId ? usedPositions.get(hoverId) : null;
+        if (hovered && pos) {
+          const text = `${hovered.name} • ${STATUS_LABELS[hovered.status]}`;
+          ctx.font = "600 12px var(--font-mono), monospace";
+          const textW = ctx.measureText(text).width + 16;
+          const x = Math.min(width - textW - 8, Math.max(8, pos.x - textW / 2));
+          const y = Math.max(8, pos.y - 58);
+          drawRoundedRect(ctx, x, y, textW, 26, 8);
+          ctx.fillStyle = "rgba(0,0,0,0.8)";
+          ctx.fill();
+          ctx.fillStyle = "#e5e7eb";
+          ctx.fillText(text, x + 8, y + 17);
+        }
+      }
+
+      raf = requestAnimationFrame(render);
+    };
+
+    raf = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(raf);
+  }, [agents, hoverId, selectedId]);
+
+  const pickAgentFromPoint = useCallback(
+    (x: number, y: number): string | null => {
+      let best: { id: string; d: number } | null = null;
+      for (const [id, pos] of positionsRef.current.entries()) {
+        const d = Math.hypot(x - pos.x, y - pos.y);
+        if (d > 20) continue;
+        if (!best || d < best.d) best = { id, d };
+      }
+      return best?.id ?? null;
+    },
+    []
+  );
+
+  return (
+    <div ref={hostRef} className="relative h-full min-h-[540px] overflow-hidden rounded-xl border border-border/60 bg-[#0f1013]">
+      <canvas
+        ref={canvasRef}
+        className="h-full w-full"
+        onMouseMove={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const id = pickAgentFromPoint(event.clientX - rect.left, event.clientY - rect.top);
+          setHoverId(id);
+        }}
+        onMouseLeave={() => setHoverId(null)}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const id = pickAgentFromPoint(event.clientX - rect.left, event.clientY - rect.top);
+          if (id) onSelect(id);
+        }}
+      />
+      <div className="pointer-events-none absolute right-3 top-3 flex gap-2 rounded-md bg-black/55 px-2 py-1 text-[11px] text-zinc-200">
+        {(["working", "meeting", "idle", "offline", "needs-help"] as AgentStatus[]).map((status) => (
+          <span key={status} className="inline-flex items-center gap-1.5">
+            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: STATUS_COLORS[status] }} />
+            {STATUS_LABELS[status]}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function DigitalOfficePage() {
   const [settingsCoordinator] = useState(() => createStudioSettingsCoordinator());
@@ -170,9 +373,8 @@ export default function DigitalOfficePage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<AgentStatus | "all">("all");
-  const [groupBy, setGroupBy] = useState<GroupMode>("team");
-  const [density, setDensity] = useState<DensityMode>("desk");
-  const [focused, setFocused] = useState<OfficeAgent | null>(null);
+  const [groupMode, setGroupMode] = useState<GroupMode>("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const fetchOffice = useCallback(async () => {
     if (status !== "connected") return;
@@ -183,12 +385,12 @@ export default function DigitalOfficePage() {
         client.call("agents.list", {}),
         client.call("status", {}),
       ]);
+
       const agentsResult = agentsResultRaw as { agents?: AgentListEntry[]; mainKey?: string };
       const statusSnapshot = statusSnapshotRaw as StatusSnapshot;
       const listedAgents = Array.isArray(agentsResult.agents) ? agentsResult.agents : [];
       const mainKey = typeof agentsResult.mainKey === "string" ? agentsResult.mainKey.trim() : "main";
       const now = Date.now();
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Local";
 
       const updatedAtBySession = new Map<string, number>();
       for (const entry of statusSnapshot.sessions?.recent ?? []) {
@@ -197,13 +399,13 @@ export default function DigitalOfficePage() {
         if (!key || updatedAt === null) continue;
         updatedAtBySession.set(key, updatedAt);
       }
-      for (const agentGroup of statusSnapshot.sessions?.byAgent ?? []) {
-        for (const entry of agentGroup?.recent ?? []) {
+      for (const group of statusSnapshot.sessions?.byAgent ?? []) {
+        for (const entry of group?.recent ?? []) {
           const key = entry?.key?.trim() ?? "";
           const updatedAt = normalizeTimestamp(entry?.updatedAt);
           if (!key || updatedAt === null) continue;
-          const current = updatedAtBySession.get(key) ?? 0;
-          if (updatedAt > current) updatedAtBySession.set(key, updatedAt);
+          const prev = updatedAtBySession.get(key) ?? 0;
+          if (updatedAt > prev) updatedAtBySession.set(key, updatedAt);
         }
       }
 
@@ -219,7 +421,7 @@ export default function DigitalOfficePage() {
         }
       }
 
-      const nextAgents = await Promise.all(
+      const next = await Promise.all(
         listedAgents.map(async (agent): Promise<OfficeAgent> => {
           const agentId = agent.id.trim();
           const sessionKey = buildAgentMainSessionKey(agentId, mainKey);
@@ -244,28 +446,23 @@ export default function DigitalOfficePage() {
             updatedAt,
             now,
           });
+
           return {
             id: agentId,
             name: resolveAgentName(agent),
-            role: "OpenClaw Agent",
-            team: "Operations",
-            project: mainSession?.modelProvider?.trim() || "General",
-            timezone,
+            role: mainSession?.modelProvider?.trim() ? `${mainSession.modelProvider} agent` : "OpenClaw agent",
             status: mappedStatus,
-            activeTask: mappedStatus === "offline" ? "No recent activity" : `Session: ${sessionKey}`,
-            statusForMins:
-              typeof updatedAt === "number" && updatedAt > 0
-                ? Math.max(1, Math.floor((now - updatedAt) / 60_000))
-                : 0,
+            updatedAt,
+            sessionKey,
           };
         })
       );
 
-      nextAgents.sort((left, right) => left.name.localeCompare(right.name));
-      setAgents(nextAgents);
+      next.sort((a, b) => a.name.localeCompare(b.name));
+      setAgents(next);
     } catch (err) {
       setAgents([]);
-      setLoadError(err instanceof Error ? err.message : "Failed to load digital office data.");
+      setLoadError(err instanceof Error ? err.message : "Failed to load office telemetry.");
     } finally {
       setLoading(false);
     }
@@ -277,10 +474,10 @@ export default function DigitalOfficePage() {
 
   useEffect(() => {
     if (status !== "connected") return;
-    const interval = setInterval(() => {
+    const timer = setInterval(() => {
       void fetchOffice();
     }, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
+    return () => clearInterval(timer);
   }, [fetchOffice, status]);
 
   const filtered = useMemo(() => {
@@ -288,45 +485,32 @@ export default function DigitalOfficePage() {
     return agents.filter((agent) => {
       if (statusFilter !== "all" && agent.status !== statusFilter) return false;
       if (!needle) return true;
-      return [agent.name, agent.role, agent.team, agent.project, agent.activeTask].join(" ").toLowerCase().includes(needle);
+      return [agent.name, agent.role, agent.sessionKey].join(" ").toLowerCase().includes(needle);
     });
   }, [agents, query, statusFilter]);
 
   const grouped = useMemo(() => {
-    const groups = new Map<string, OfficeAgent[]>();
-    const field = GROUP_BY_FIELD[groupBy];
+    if (groupMode === "all") return [["All agents", filtered] as const];
+    const map = new Map<string, OfficeAgent[]>();
     for (const agent of filtered) {
-      const key = String(agent[field]);
-      const current = groups.get(key) ?? [];
-      current.push(agent);
-      groups.set(key, current);
+      const key = STATUS_LABELS[agent.status];
+      const rows = map.get(key) ?? [];
+      rows.push(agent);
+      map.set(key, rows);
     }
-    return Array.from(groups.entries());
-  }, [filtered, groupBy]);
-
-  const counts = useMemo(() => {
-    const map: Record<AgentStatus, number> = {
-      working: 0,
-      idle: 0,
-      meeting: 0,
-      offline: 0,
-      "needs-help": 0,
-    };
-    for (const agent of agents) {
-      map[agent.status] += 1;
-    }
-    return map;
-  }, [agents]);
+    return Array.from(map.entries());
+  }, [filtered, groupMode]);
 
   useEffect(() => {
-    if (!focused) {
-      setFocused(filtered[0] ?? null);
+    if (filtered.length === 0) {
+      setSelectedId(null);
       return;
     }
-    const refreshed = filtered.find((entry) => entry.id === focused.id) ?? null;
-    setFocused(refreshed ?? (filtered[0] ?? null));
-  }, [filtered, focused]);
+    if (selectedId && filtered.some((a) => a.id === selectedId)) return;
+    setSelectedId(filtered[0]?.id ?? null);
+  }, [filtered, selectedId]);
 
+  const selected = useMemo(() => filtered.find((agent) => agent.id === selectedId) ?? null, [filtered, selectedId]);
   const notConnected = status !== "connected";
 
   return (
@@ -339,9 +523,6 @@ export default function DigitalOfficePage() {
               Studio
             </Link>
             <h1 className="console-title type-page-title text-foreground">Digital Office Dashboard</h1>
-          </div>
-          <div className="ui-chip px-3 py-1.5 font-mono text-[10px] font-semibold tracking-[0.08em]">
-            Scales 5 to 100+
           </div>
         </div>
       </header>
@@ -362,180 +543,91 @@ export default function DigitalOfficePage() {
             />
           </div>
         ) : (
-          <div className="mx-auto grid h-[calc(100vh-7.5rem)] max-w-[1580px] grid-cols-1 gap-3 xl:grid-cols-[300px_minmax(0,1fr)_320px]">
-          <aside className="glass-panel ui-panel ui-scroll min-h-0 overflow-auto p-3">
-            <h2 className="type-secondary-heading">Controls</h2>
-            <div className="mt-3 space-y-3">
-              <div className="relative">
-                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search agents, role, task..." className="ui-input h-10 w-full rounded-md pl-10 pr-3 text-sm" />
-              </div>
-              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as AgentStatus | "all")} className="ui-input h-10 w-full rounded-md px-3 text-sm">
-                <option value="all">All statuses</option>
-                {STATUSES.map((status) => (
-                  <option key={status} value={status}>
-                    {STATUS_META[status].label}
-                  </option>
-                ))}
-              </select>
-              <select value={groupBy} onChange={(event) => setGroupBy(event.target.value as GroupMode)} className="ui-input h-10 w-full rounded-md px-3 text-sm">
-                <option value="team">Group by Team</option>
-                <option value="project">Group by Project</option>
-                <option value="timezone">Group by Timezone</option>
-              </select>
-              <div className="ui-segment grid-cols-2 p-1">
-                <button type="button" className="ui-segment-item px-2 py-1.5" data-active={density === "desk"} onClick={() => setDensity("desk")}>
-                  Desk mode
-                </button>
-                <button type="button" className="ui-segment-item px-2 py-1.5" data-active={density === "grid"} onClick={() => setDensity("grid")}>
-                  Grid mode
-                </button>
-              </div>
-            </div>
-            <h3 className="mt-6 type-secondary-heading">Status Overview</h3>
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              {STATUSES.map((status) => (
-                <div key={status} className={`ui-card rounded-md px-2.5 py-2 text-xs ${STATUS_META[status].badge}`}>
-                  <div className="font-medium">{STATUS_META[status].label}</div>
-                  <div className="mt-1 font-mono text-[11px]">{counts[status]}</div>
+          <div className="mx-auto grid h-[calc(100vh-7.5rem)] max-w-[1600px] grid-cols-1 gap-3 xl:grid-cols-[300px_minmax(0,1fr)_320px]">
+            <aside className="glass-panel ui-panel ui-scroll min-h-0 overflow-auto p-3">
+              <h2 className="type-secondary-heading">Controls</h2>
+              <div className="mt-3 space-y-3">
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder="Search by name, role, session"
+                    className="ui-input h-10 w-full rounded-md pl-10 pr-3 text-sm"
+                  />
                 </div>
-              ))}
-            </div>
-            {loading ? <p className="mt-3 text-xs text-muted-foreground">Syncing live office view...</p> : null}
-            {loadError ? <p className="mt-3 text-xs text-destructive">{loadError}</p> : null}
-            <h3 className="mt-6 type-secondary-heading">User Flow</h3>
-            <ol className="mt-2 space-y-1 text-sm text-muted-foreground">
-              <li>1. Scan status summary and alert counts.</li>
-              <li>2. Filter/search the floor to isolate a team.</li>
-              <li>3. Hover desks for quick health and workload.</li>
-              <li>4. Click a desk for detail + actions panel.</li>
-            </ol>
-          </aside>
+                <select
+                  value={statusFilter}
+                  onChange={(event) => setStatusFilter(event.target.value as AgentStatus | "all")}
+                  className="ui-input h-10 w-full rounded-md px-3 text-sm"
+                >
+                  <option value="all">All statuses</option>
+                  {(Object.keys(STATUS_LABELS) as AgentStatus[]).map((status) => (
+                    <option key={status} value={status}>{STATUS_LABELS[status]}</option>
+                  ))}
+                </select>
+                <select
+                  value={groupMode}
+                  onChange={(event) => setGroupMode(event.target.value as GroupMode)}
+                  className="ui-input h-10 w-full rounded-md px-3 text-sm"
+                >
+                  <option value="all">Show all</option>
+                  <option value="status">Group by status</option>
+                </select>
+              </div>
+              <div className="mt-4 text-xs text-muted-foreground">
+                {loading ? "Syncing live OpenClaw office..." : `${filtered.length} visible agents`}
+              </div>
+              {loadError ? <p className="mt-2 text-xs text-destructive">{loadError}</p> : null}
+            </aside>
 
-          <section className="glass-panel ui-panel ui-scroll min-h-0 overflow-auto p-3">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h2 className="type-secondary-heading">Virtual Office Layout</h2>
-              <div className="text-xs text-muted-foreground">{filtered.length} visible agents</div>
-            </div>
-            <div className="space-y-4">
-              {grouped.map(([group, agents]) => (
-                <article key={group} className="ui-card rounded-xl p-3">
-                  <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold">{group}</h3>
-                    <span className="ui-chip px-2 py-1 text-[10px]">{agents.length}</span>
-                  </div>
-                  <div className={density === "desk" ? "grid gap-3 md:grid-cols-2 2xl:grid-cols-3" : "grid gap-2 md:grid-cols-3 xl:grid-cols-4"}>
-                    {agents.map((agent) => {
-                      const meta = STATUS_META[agent.status];
-                      const Icon = meta.icon;
-                      return (
+            <section className="glass-panel ui-panel min-h-0 overflow-hidden p-3">
+              <OfficeCanvas agents={filtered} selectedId={selectedId} onSelect={setSelectedId} />
+            </section>
+
+            <aside className="glass-panel ui-panel ui-scroll min-h-0 overflow-auto p-3">
+              <h2 className="type-secondary-heading">Live Roster</h2>
+              <div className="mt-3 space-y-3">
+                {grouped.map(([label, rows]) => (
+                  <div key={label} className="ui-card rounded-xl p-2.5">
+                    <div className="mb-2 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground">{label}</h3>
+                      <span className="ui-chip px-2 py-1 text-[10px]">{rows.length}</span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {rows.map((agent) => (
                         <button
                           key={agent.id}
                           type="button"
-                          className={`relative rounded-xl border p-3 text-left transition hover:bg-surface-2/60 ${density === "desk" ? "min-h-[164px]" : "min-h-[122px]"} ${focused?.id === agent.id ? "border-primary/60 bg-surface-2/70" : "border-border/60 bg-surface-1/60"}`}
-                          onClick={() => setFocused(agent)}
+                          onClick={() => setSelectedId(agent.id)}
+                          className={`w-full rounded-md px-2 py-2 text-left text-xs transition ${selectedId === agent.id ? "bg-surface-2" : "hover:bg-surface-2/70"}`}
                         >
-                          <div className="mb-2 flex items-start justify-between gap-2">
-                            <div className="flex items-center gap-2">
-                              <span className={`relative inline-flex h-11 w-11 items-center justify-center rounded-full ring-2 ${meta.ring}`}>
-                                <Image
-                                  src={buildAvatarDataUrl(agent.id)}
-                                  alt={`${agent.name} avatar`}
-                                  width={40}
-                                  height={40}
-                                  unoptimized
-                                  className={`h-10 w-10 rounded-full object-cover ${agent.status === "offline" ? "opacity-45 grayscale" : ""}`}
-                                />
-                                {agent.status === "working" ? <span className={`absolute -bottom-1 right-0 h-2.5 w-2.5 rounded-full bg-emerald-400 ${meta.pulse} animate-pulse`} /> : null}
-                              </span>
-                              <div>
-                                <div className="text-sm font-semibold">{agent.name}</div>
-                                <div className="text-[11px] text-muted-foreground">{agent.role}</div>
-                              </div>
-                            </div>
-                            <span className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] font-medium ${meta.badge}`}>
-                              <Icon className="h-3 w-3" />
-                              {meta.label}
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate font-medium">{agent.name}</span>
+                            <span className="inline-flex items-center gap-1">
+                              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STATUS_COLORS[agent.status] }} />
+                              <span className="text-[10px] text-muted-foreground">{STATUS_LABELS[agent.status]}</span>
                             </span>
                           </div>
-                          <div className={`rounded-lg border border-border/55 px-2.5 py-2 ${agent.status === "working" ? "bg-emerald-500/10" : "bg-surface-2/55"}`}>
-                            <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                              <span>Workspace</span>
-                              <span>{agent.timezone}</span>
-                            </div>
-                            <div className="mt-1 text-xs">{density === "desk" ? `Desk + computer + ${agent.project} environment` : agent.activeTask}</div>
-                          </div>
-                          <div className="mt-2 text-[11px] text-muted-foreground">Status for {agent.statusForMins} min</div>
                         </button>
-                      );
-                    })}
-                  </div>
-                </article>
-              ))}
-              {!loading && filtered.length === 0 ? (
-                <div className="ui-card rounded-xl p-4 text-sm text-muted-foreground">
-                  No agents match your current filters.
-                </div>
-              ) : null}
-            </div>
-          </section>
-
-          <aside className="glass-panel ui-panel ui-scroll min-h-0 overflow-auto p-3">
-            <h2 className="type-secondary-heading">Agent Detail</h2>
-            {focused ? (
-              <div className="mt-3 space-y-3">
-                <div className="ui-card rounded-xl p-3">
-                  <div className="flex items-center gap-3">
-                    <Image
-                      src={buildAvatarDataUrl(focused.id)}
-                      alt={`${focused.name} avatar`}
-                      width={56}
-                      height={56}
-                      unoptimized
-                      className="h-14 w-14 rounded-full ring-2 ring-primary/55"
-                    />
-                    <div>
-                      <div className="font-semibold">{focused.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {focused.role} · {focused.team}
-                      </div>
+                      ))}
                     </div>
                   </div>
-                  <div className={`mt-3 inline-flex rounded-md px-2 py-1 text-xs ${STATUS_META[focused.status].badge}`}>
-                    {STATUS_META[focused.status].label}
-                  </div>
-                </div>
-                <div className="ui-card rounded-xl p-3 text-sm">
-                  <div className="mb-1 text-xs text-muted-foreground">Current task</div>
-                  <div>{focused.activeTask}</div>
-                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                    <div className="rounded-md bg-surface-2/65 p-2">Project: {focused.project}</div>
-                    <div className="rounded-md bg-surface-2/65 p-2">Timezone: {focused.timezone}</div>
-                  </div>
-                </div>
-                <div className="ui-card rounded-xl p-3 text-sm">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Key Features</h3>
-                  <ul className="mt-2 space-y-1.5 text-sm">
-                    <li>Distinct avatar + desk pod per agent</li>
-                    <li>Motion cues for active work states</li>
-                    <li>Color + icon + label status redundancy</li>
-                    <li>Search, filters, grouping, clustering</li>
-                  </ul>
-                </div>
-                <div className="ui-card rounded-xl p-3 text-sm">
-                  <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Future Enhancements</h3>
-                  <ul className="mt-2 space-y-1.5 text-sm">
-                    <li>Predictive overload and SLA risk alerts</li>
-                    <li>Timeline playback of team transitions</li>
-                    <li>Scenario simulation for reassignment</li>
-                  </ul>
-                </div>
+                ))}
               </div>
-            ) : (
-              <p className="mt-3 text-sm text-muted-foreground">Select an agent workspace to inspect details.</p>
-            )}
-          </aside>
-        </div>
+              {selected ? (
+                <div className="ui-card mt-3 rounded-xl p-3 text-xs">
+                  <div className="font-semibold">{selected.name}</div>
+                  <div className="mt-1 text-muted-foreground">{selected.role}</div>
+                  <div className="mt-2">Session: <span className="font-mono">{selected.sessionKey}</span></div>
+                  <div className="mt-2 inline-flex items-center gap-1 rounded-md px-2 py-1" style={{ backgroundColor: `${STATUS_COLORS[selected.status]}22`, color: STATUS_COLORS[selected.status] }}>
+                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: STATUS_COLORS[selected.status] }} />
+                    {STATUS_LABELS[selected.status]}
+                  </div>
+                </div>
+              ) : null}
+            </aside>
+          </div>
         )}
       </main>
     </div>
