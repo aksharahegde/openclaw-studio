@@ -106,6 +106,14 @@ export const HeaderBar = ({
                     Memory
                   </Link>
                   <Link
+                    href="/digital-office"
+                    className="ui-btn-ghost block w-full justify-start border-transparent px-3 py-2 text-left text-xs font-medium tracking-normal text-foreground"
+                    onClick={() => setMenuOpen(false)}
+                    data-testid="digital-office-nav"
+                  >
+                    Digital office
+                  </Link>
+                  <Link
                     href="/team"
                     className="ui-btn-ghost block w-full justify-start border-transparent px-3 py-2 text-left text-xs font-medium tracking-normal text-foreground"
                     onClick={() => setMenuOpen(false)}
