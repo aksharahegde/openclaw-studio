@@ -45,28 +45,40 @@ export const loadLocalGatewayDefaults = () => {
   return readOpenclawGatewayDefaults();
 };
 
-export const loadStudioSettings = (): StudioSettings => {
+const TASK_BOARD_VAULT_PATH_ENV = "OPENCLAW_TASK_BOARD_VAULT_PATH";
+
+export const loadStudioSettings = (
+  env: NodeJS.ProcessEnv = process.env
+): StudioSettings => {
   const settingsPath = resolveStudioSettingsPath();
   if (!fs.existsSync(settingsPath)) {
     const defaults = defaultStudioSettings();
     const gateway = loadLocalGatewayDefaults();
-    return gateway ? { ...defaults, gateway } : defaults;
+    const withGateway = gateway ? { ...defaults, gateway } : defaults;
+    const vaultOverride = env[TASK_BOARD_VAULT_PATH_ENV]?.trim();
+    return vaultOverride
+      ? { ...withGateway, taskBoardVaultPath: vaultOverride }
+      : withGateway;
   }
   const raw = fs.readFileSync(settingsPath, "utf8");
   const parsed = JSON.parse(raw) as unknown;
   const settings = normalizeStudioSettings(parsed);
-  if (!settings.gateway?.token) {
+  const vaultOverride = env[TASK_BOARD_VAULT_PATH_ENV]?.trim();
+  const withVaultEnv = vaultOverride
+    ? { ...settings, taskBoardVaultPath: vaultOverride }
+    : settings;
+  if (!withVaultEnv.gateway?.token) {
     const gateway = loadLocalGatewayDefaults();
     if (gateway) {
       return {
-        ...settings,
-        gateway: settings.gateway?.url?.trim()
-          ? { url: settings.gateway.url.trim(), token: gateway.token }
+        ...withVaultEnv,
+        gateway: withVaultEnv.gateway?.url?.trim()
+          ? { url: withVaultEnv.gateway.url.trim(), token: gateway.token }
           : gateway,
       };
     }
   }
-  return settings;
+  return withVaultEnv;
 };
 
 export const saveStudioSettings = (next: StudioSettings) => {

@@ -60,6 +60,9 @@ const mergeStudioPatch = (
       ...(next.gateway !== undefined ? { gateway: next.gateway } : {}),
       ...(next.focused ? { focused: { ...next.focused } } : {}),
       ...(next.avatars ? { avatars: { ...next.avatars } } : {}),
+      ...(next.taskBoardVaultPath !== undefined
+        ? { taskBoardVaultPath: next.taskBoardVaultPath }
+        : {}),
     };
   }
   const focused = mergeFocusedPatch(current.focused, next.focused);
@@ -72,6 +75,11 @@ const mergeStudioPatch = (
         : {}),
     ...(focused ? { focused } : {}),
     ...(avatars ? { avatars } : {}),
+    ...(next.taskBoardVaultPath !== undefined
+      ? { taskBoardVaultPath: next.taskBoardVaultPath }
+      : current.taskBoardVaultPath !== undefined
+        ? { taskBoardVaultPath: current.taskBoardVaultPath }
+        : {}),
   };
 };
 

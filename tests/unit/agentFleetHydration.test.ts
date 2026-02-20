@@ -16,6 +16,7 @@ describe("hydrateAgentFleetFromGateway", () => {
           "agent-1": "persisted-seed",
         },
       },
+      taskBoardVaultPath: null,
     };
 
     const call = vi.fn(async (method: string, params: unknown) => {

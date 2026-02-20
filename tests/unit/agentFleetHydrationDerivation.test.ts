@@ -16,6 +16,7 @@ describe("deriveHydrateAgentFleetResult", () => {
           "agent-1": "persisted-seed",
         },
       },
+      taskBoardVaultPath: null,
     };
 
     const result = deriveHydrateAgentFleetResult({

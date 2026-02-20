@@ -17,12 +17,14 @@ export type StudioSettings = {
   gateway: StudioGatewaySettings | null;
   focused: Record<string, StudioFocusedPreference>;
   avatars: Record<string, Record<string, string>>;
+  taskBoardVaultPath: string | null;
 };
 
 export type StudioSettingsPatch = {
   gateway?: StudioGatewaySettings | null;
   focused?: Record<string, Partial<StudioFocusedPreference> | null>;
   avatars?: Record<string, Record<string, string | null> | null>;
+  taskBoardVaultPath?: string | null;
 };
 
 const SETTINGS_VERSION = 1 as const;
@@ -154,11 +156,17 @@ const normalizeAvatars = (value: unknown): Record<string, Record<string, string>
   return avatars;
 };
 
+const normalizeTaskBoardVaultPath = (value: unknown): string | null => {
+  const s = coerceString(value);
+  return s || null;
+};
+
 export const defaultStudioSettings = (): StudioSettings => ({
   version: SETTINGS_VERSION,
   gateway: null,
   focused: {},
   avatars: {},
+  taskBoardVaultPath: null,
 });
 
 export const normalizeStudioSettings = (raw: unknown): StudioSettings => {
@@ -166,11 +174,13 @@ export const normalizeStudioSettings = (raw: unknown): StudioSettings => {
   const gateway = normalizeGatewaySettings(raw.gateway);
   const focused = normalizeFocused(raw.focused);
   const avatars = normalizeAvatars(raw.avatars);
+  const taskBoardVaultPath = normalizeTaskBoardVaultPath(raw.taskBoardVaultPath);
   return {
     version: SETTINGS_VERSION,
     gateway,
     focused,
     avatars,
+    taskBoardVaultPath,
   };
 };
 
@@ -221,11 +231,16 @@ export const mergeStudioSettings = (
       nextAvatars[gatewayKey] = existing;
     }
   }
+  const nextTaskBoardVaultPath =
+    patch.taskBoardVaultPath === undefined
+      ? current.taskBoardVaultPath
+      : normalizeTaskBoardVaultPath(patch.taskBoardVaultPath);
   return {
     version: SETTINGS_VERSION,
     gateway: nextGateway ?? null,
     focused: nextFocused,
     avatars: nextAvatars,
+    taskBoardVaultPath: nextTaskBoardVaultPath,
   };
 };
 

@@ -12,6 +12,7 @@ describe("studio settings normalization", () => {
     expect(normalized.gateway).toBeNull();
     expect(normalized.focused).toEqual({});
     expect(normalized.avatars).toEqual({});
+    expect(normalized.taskBoardVaultPath).toBeNull();
   });
 
   it("normalizes gateway entries", () => {

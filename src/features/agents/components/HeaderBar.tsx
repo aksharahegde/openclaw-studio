@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import type { GatewayStatus } from "@/lib/gateway/GatewayClient";
 import { Plug } from "lucide-react";
@@ -80,6 +81,14 @@ export const HeaderBar = ({
                   >
                     Gateway connection
                   </button>
+                  <Link
+                    href="/task-board"
+                    className="ui-btn-ghost block w-full justify-start border-transparent px-3 py-2 text-left text-xs font-medium tracking-normal text-foreground"
+                    onClick={() => setMenuOpen(false)}
+                    data-testid="task-board-nav"
+                  >
+                    Task board
+                  </Link>
                 </div>
               ) : null}
             </div>
