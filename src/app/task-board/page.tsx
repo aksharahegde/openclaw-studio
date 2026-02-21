@@ -3,12 +3,20 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { fetchJson } from "@/lib/http";
-import type { TaskBoardSnapshot } from "@/lib/task-board/read-model";
+import type {
+  TaskBoardSnapshot,
+  TaskBoardStatus,
+  TaskBoardTask,
+} from "@/lib/task-board/read-model";
 import { TaskBoard as TaskBoardView } from "@/features/task-board/components/TaskBoard";
 import {
   TaskBoardCreateModal,
   type TaskBoardCreatePayload,
 } from "@/features/task-board/components/TaskBoardCreateModal";
+import {
+  TaskBoardEditModal,
+  type TaskBoardEditPayload,
+} from "@/features/task-board/components/TaskBoardEditModal";
 import type { StudioSettings } from "@/lib/studio/settings";
 import { ArrowLeft, Plus } from "lucide-react";
 
@@ -27,6 +35,9 @@ export default function TaskBoardPage() {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [taskToEdit, setTaskToEdit] = useState<TaskBoardTask | null>(null);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   const fetchBoard = useCallback(async () => {
     try {
@@ -118,6 +129,73 @@ export default function TaskBoardPage() {
     },
     [fetchBoard]
   );
+
+  const handleTaskMove = useCallback(
+    async (taskId: string, newStatus: TaskBoardStatus) => {
+      try {
+        await fetchJson(`/api/task-board/tasks/${taskId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: newStatus }),
+        });
+        await fetchBoard();
+      } catch {
+        await fetchBoard();
+      }
+    },
+    [fetchBoard]
+  );
+
+  const handleEditTask = useCallback((task: TaskBoardTask) => {
+    setEditError(null);
+    setTaskToEdit(task);
+  }, []);
+
+  const handleTaskEdit = useCallback(
+    async (payload: TaskBoardEditPayload) => {
+      if (!taskToEdit) return;
+      setEditError(null);
+      setEditBusy(true);
+      try {
+        await fetchJson(`/api/task-board/tasks/${taskToEdit.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: payload.title,
+            status: payload.status,
+            assignee: payload.assignee,
+          }),
+        });
+        setTaskToEdit(null);
+        await fetchBoard();
+      } catch (err) {
+        setEditError(
+          err instanceof Error ? err.message : "Failed to update task."
+        );
+      } finally {
+        setEditBusy(false);
+      }
+    },
+    [taskToEdit, fetchBoard]
+  );
+
+  const handleTaskDelete = useCallback(async () => {
+    if (!taskToEdit) return;
+    setEditBusy(true);
+    try {
+      await fetchJson(`/api/task-board/tasks/${taskToEdit.id}`, {
+        method: "DELETE",
+      });
+      setTaskToEdit(null);
+      await fetchBoard();
+    } catch (err) {
+      setEditError(
+        err instanceof Error ? err.message : "Failed to delete task."
+      );
+    } finally {
+      setEditBusy(false);
+    }
+  }, [taskToEdit, fetchBoard]);
 
   return (
     <div className="flex min-h-screen flex-col bg-background">
@@ -211,7 +289,11 @@ export default function TaskBoardPage() {
                 done), assignee (e.g. &quot;me&quot; or agent id).
               </p>
             ) : (
-              <TaskBoardView snapshot={response.snapshot} />
+              <TaskBoardView
+                snapshot={response.snapshot}
+                onTaskMove={handleTaskMove}
+                onEditTask={handleEditTask}
+              />
             )}
           </div>
         ) : null}
@@ -225,6 +307,18 @@ export default function TaskBoardPage() {
           setCreateModalOpen(false);
         }}
         onSubmit={handleCreateTask}
+      />
+      <TaskBoardEditModal
+        open={taskToEdit !== null}
+        task={taskToEdit}
+        busy={editBusy}
+        submitError={editError}
+        onClose={() => {
+          setEditError(null);
+          setTaskToEdit(null);
+        }}
+        onSave={handleTaskEdit}
+        onDelete={handleTaskDelete}
       />
     </div>
   );

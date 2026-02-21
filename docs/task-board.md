@@ -57,8 +57,19 @@ If the agent cannot write to the vault directly (e.g. runs elsewhere), it can ca
 
 - **Create**: `POST /api/task-board/tasks` with body `{ "title": "...", "status": "todo", "assignee": "me" }`. Returns the created task (including `id`).
 - **Update**: `PATCH /api/task-board/tasks/:id` with body `{ "title": "...", "status": "in_progress", "assignee": "agent-1" }`.
+- **Delete**: `DELETE /api/task-board/tasks/:id`. Returns 204 on success.
 
 Same-origin or localhost only; no auth beyond normal Studio access.
+
+## Task management (UI)
+
+In the Task board page you can:
+
+- **Move a task**: Drag a card by its handle into another column. The task’s status is updated via `PATCH` and the board refetches.
+- **Edit a task**: Click the edit icon on a card to open the edit modal. Change title, status, or assignee and save (`PATCH`), or delete the task (confirm, then `DELETE`).
+- **Create a task**: Use **New task** and the create modal (`POST`).
+
+Agents use the same API: create/update/delete via the endpoints above or by writing/deleting files in the vault. Last write wins if user and agent both change a task.
 
 ## Board behavior
 

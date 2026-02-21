@@ -135,3 +135,13 @@ export function findTaskFileById(
   }
   return null;
 }
+
+export function deleteTaskFile(
+  vaultTaskDir: string,
+  filename: string
+): void {
+  const filePath = path.join(vaultTaskDir, filename);
+  if (fs.existsSync(filePath)) {
+    fs.unlinkSync(filePath);
+  }
+}
