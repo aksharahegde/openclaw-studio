@@ -1,33 +1,57 @@
 # Studio UI Guide
 
-This doc covers common UI workflows after you are connected to a gateway.
+This doc describes the current Studio IA and behavior.
 
-## Cron jobs in Agent Settings
+## Agent Surfaces
 
-- Open an agent and go to **Settings -> Cron jobs**.
-- If no jobs exist, use the empty-state **Create** button.
-- If jobs already exist, use the header **Create** button.
-- The modal is agent-scoped and walks through template selection, task text, schedule, and review.
-- Submitting creates the job via gateway `cron.add` and refreshes that same agent's cron list.
+### Chat (default)
+- Selecting an agent opens chat as the primary workspace.
+- Chat header controls include:
+  - New session
+  - Personality shortcut
+  - Settings shortcut
+- New session resets the current agent session and clears visible transcript state in Studio.
 
-## Agent creation workflow
+### Settings Sidebar
+- The settings cog opens one sidebar with four tabs:
+  1. Personality
+  2. Capabilities
+  3. Automations
+  4. Advanced
 
-- Click **New Agent** in the fleet sidebar.
-- Enter an agent name and avatar, then create.
-- The create modal does not include permission controls.
-- After create succeeds, Studio opens **Settings** for the new agent automatically.
-- New agents bootstrap to **Autonomous** command mode by default.
-- Use **Settings -> Permissions** for preset controls (Conservative, Collaborative, Autonomous) and optional advanced controls (`Command mode`, `Web access`, `File tools`).
+## Personality
+- Personality is the first tab when opening settings.
+- Rename agent lives in Personality.
+- Personality file tabs are intentionally limited to:
+  - Personality (`SOUL.md`)
+  - Instructions (`AGENTS.md`)
+  - About You (`USER.md`)
+  - Identity (`IDENTITY.md`)
+- Underlying persistence still saves the full gateway-backed agent file set.
 
-## Exec approvals in chat
+## Capabilities
+- Capabilities exposes direct controls (no role preset labels):
+  - Run commands: Off / Ask / Auto
+  - Web access: Off / On
+  - File tools: Off / On
+- Skills and Browser automation are visible as coming-soon toggles.
 
-- When a run requires exec approval, chat shows an **Exec approval required** card with:
-  - command preview
-  - host and cwd
-  - expiration timestamp
-- Resolve directly in chat with:
-  - **Allow once**
-  - **Always allow**
-  - **Deny**
-- The fleet row displays **Needs approval** while approvals are pending for that agent.
-- Expired approvals are pruned automatically, so stale cards and stale **Needs approval** badges clear without a manual resolve event.
+## Automations
+- User-facing language is schedules/automations (not cron-first terminology).
+- Schedule creation uses template -> task -> schedule -> review flow.
+- Heartbeats are represented in this tab as coming soon.
+
+## Advanced
+- Advanced contains:
+  - Display toggles (Show tool calls, Show thinking)
+  - Open Full Control UI
+  - Delete agent (danger zone)
+- Session controls are not in Advanced.
+
+## Agent Creation Defaults
+- Create modal captures only name/avatar.
+- After creation, Studio applies safe defaults:
+  - Commands: Ask
+  - Web access: Off
+  - File tools: Off
+- Post-create UX keeps chat as primary and auto-opens Capabilities sidebar for onboarding.

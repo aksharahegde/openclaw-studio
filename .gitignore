@@ -54,6 +54,7 @@ test-results
 !/.agent/README.md
 !/.agent/done/
 !/.agent/done/**
+/.agent/done/**/*.md
 /.agent/local
 /.agent/execplan-pending.md
 /.agent/*.local.md
@@ -63,6 +64,7 @@ test-results
 /.moltbot
 /agent-canvas
 /worktrees
+/.claude
 
 # local issue tracker
 /.beads

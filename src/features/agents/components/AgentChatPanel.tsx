@@ -12,7 +12,7 @@ import {
 import type { AgentState as AgentRecord } from "@/features/agents/state/store";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Brain, ChevronRight, Clock, Cog, Shuffle } from "lucide-react";
+import { ChevronRight, Clock, Cog, Shuffle } from "lucide-react";
 import type { GatewayModelChoice } from "@/lib/gateway/models";
 import { rewriteMediaLinesToMarkdown } from "@/lib/text/media-markdown";
 import { normalizeAssistantDisplayText } from "@/lib/text/assistantText";
@@ -29,6 +29,10 @@ import {
   type AssistantTraceEvent,
   type AgentChatItem,
 } from "./chatItems";
+import {
+  resolveAgentStatusBadgeClass,
+  resolveAgentStatusLabel,
+} from "./colorSemantics";
 import { EmptyStatePanel } from "./EmptyStatePanel";
 
 const formatChatTimestamp = (timestampMs: number): string => {
@@ -94,7 +98,7 @@ type AgentChatPanelProps = {
   stopDisabledReason?: string | null;
   onLoadMoreHistory: () => void;
   onOpenSettings: () => void;
-  onOpenBrain?: () => void;
+  onNewSession?: () => Promise<void> | void;
   onModelChange: (value: string | null) => void;
   onThinkingChange: (value: string | null) => void;
   onDraftChange: (value: string) => void;
@@ -125,10 +129,10 @@ const ExecApprovalCard = memo(function ExecApprovalCard({
   const disabled = approval.resolving || !onResolve;
   return (
     <div
-      className={`w-full ${ASSISTANT_MAX_WIDTH_EXPANDED_CLASS} ${ASSISTANT_GUTTER_CLASS} self-start rounded-md bg-amber-500/12 px-3 py-2 shadow-2xs`}
+      className={`w-full ${ASSISTANT_MAX_WIDTH_EXPANDED_CLASS} ${ASSISTANT_GUTTER_CLASS} ui-badge-approval self-start rounded-md px-3 py-2 shadow-2xs`}
       data-testid={`exec-approval-card-${approval.id}`}
     >
-      <div className="type-meta text-amber-800">
+      <div className="type-meta">
         Exec approval required
       </div>
       <div className="mt-2 rounded-md bg-surface-3 px-2 py-1.5 shadow-2xs">
@@ -140,7 +144,7 @@ const ExecApprovalCard = memo(function ExecApprovalCard({
         {approval.cwd ? <div className="sm:col-span-2">CWD: {approval.cwd}</div> : null}
       </div>
       {approval.error ? (
-        <div className="mt-2 rounded-md bg-destructive/12 px-2 py-1 text-[11px] text-destructive shadow-2xs">
+        <div className="ui-alert-danger mt-2 rounded-md px-2 py-1 text-[11px] shadow-2xs">
           {approval.error}
         </div>
       ) : null}
@@ -165,7 +169,7 @@ const ExecApprovalCard = memo(function ExecApprovalCard({
         </button>
         <button
           type="button"
-          className="rounded-md border border-destructive/35 bg-destructive/12 px-2.5 py-1 font-mono text-[12px] font-medium tracking-[0.02em] text-destructive transition hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-60"
+          className="ui-btn-danger rounded-md px-2.5 py-1 font-mono text-[12px] font-medium tracking-[0.02em] transition disabled:cursor-not-allowed disabled:opacity-60"
           onClick={() => onResolve?.(approval.id, "deny")}
           disabled={disabled}
           aria-label={`Deny exec approval ${approval.id}`}
@@ -248,7 +252,7 @@ const ThinkingDetailsRow = memo(function ThinkingDetailsRow({
   return (
     <details
       open={open}
-      className="group rounded-md bg-surface-2 px-2 py-1.5 text-[10px] text-muted-foreground/80 shadow-2xs"
+      className="ui-chat-thinking group rounded-md px-2 py-1.5 text-[10px] shadow-2xs"
     >
       <summary
         className="flex cursor-pointer list-none items-center gap-2 opacity-65 [&::-webkit-details-marker]:hidden"
@@ -291,7 +295,7 @@ const ThinkingDetailsRow = memo(function ThinkingDetailsRow({
               <ToolCallDetails
                 key={`thinking-tool-${index}-${event.text.slice(0, 48)}`}
                 line={event.text}
-                className="rounded-md bg-surface-3 px-2 py-1 text-[10px] text-muted-foreground shadow-2xs"
+                className="rounded-md border border-border/45 bg-surface-2/65 px-2 py-1 text-[10px] text-muted-foreground/90 shadow-2xs"
               />
             )
           )}
@@ -309,8 +313,8 @@ const UserMessageCard = memo(function UserMessageCard({
   timestampMs?: number;
 }) {
   return (
-    <div className="w-full max-w-[70ch] self-end overflow-hidden rounded-md bg-[color:var(--chat-user-bg)] shadow-2xs">
-      <div className="flex items-center justify-between gap-3 bg-[color:var(--chat-user-header-bg)] px-3 py-2">
+    <div className="ui-chat-user-card w-full max-w-[70ch] self-end overflow-hidden rounded-[var(--radius-small)] bg-[color:var(--chat-user-bg)]">
+      <div className="flex items-center justify-between gap-3 bg-[color:var(--chat-user-header-bg)] px-3 py-2 dark:px-3.5 dark:py-2.5">
         <div className="type-meta min-w-0 truncate font-mono text-foreground/90">
           You
         </div>
@@ -320,7 +324,7 @@ const UserMessageCard = memo(function UserMessageCard({
           </time>
         ) : null}
       </div>
-      <div className="agent-markdown type-body px-3 py-3 text-foreground">
+      <div className="agent-markdown type-body px-3 py-3 text-foreground dark:px-3.5 dark:py-3.5">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
       </div>
     </div>
@@ -396,8 +400,8 @@ const AssistantMessageCard = memo(function AssistantMessageCard({
             </span>
           </div>
         ) : (
-          <div className="mt-2 space-y-3">
-            {streaming ? (
+          <div className="mt-2 space-y-3 dark:space-y-5">
+            {streaming && !hasThinking ? (
               <div
                 className="flex items-center gap-2 text-[10px] text-muted-foreground/80"
                 role="status"
@@ -426,36 +430,38 @@ const AssistantMessageCard = memo(function AssistantMessageCard({
             ) : null}
 
             {contentText ? (
-              streaming ? (
-                (() => {
-                  if (!contentText.includes("MEDIA:")) {
+              <div className="ui-chat-assistant-card">
+                {streaming ? (
+                  (() => {
+                    if (!contentText.includes("MEDIA:")) {
+                      return (
+                        <div className="whitespace-pre-wrap break-words text-foreground">
+                          {contentText}
+                        </div>
+                      );
+                    }
+                    const rewritten = rewriteMediaLinesToMarkdown(contentText);
+                    if (!rewritten.includes("![](")) {
+                      return (
+                        <div className="whitespace-pre-wrap break-words text-foreground">
+                          {contentText}
+                        </div>
+                      );
+                    }
                     return (
-                      <div className="whitespace-pre-wrap break-words text-foreground">
-                        {contentText}
+                      <div className="agent-markdown text-foreground">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{rewritten}</ReactMarkdown>
                       </div>
                     );
-                  }
-                  const rewritten = rewriteMediaLinesToMarkdown(contentText);
-                  if (!rewritten.includes("![](")) {
-                    return (
-                      <div className="whitespace-pre-wrap break-words text-foreground">
-                        {contentText}
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="agent-markdown text-foreground">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{rewritten}</ReactMarkdown>
-                    </div>
-                  );
-                })()
-              ) : (
-                <div className="agent-markdown text-foreground">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {rewriteMediaLinesToMarkdown(contentText)}
-                  </ReactMarkdown>
-                </div>
-              )
+                  })()
+                ) : (
+                  <div className="agent-markdown text-foreground">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {rewriteMediaLinesToMarkdown(contentText)}
+                    </ReactMarkdown>
+                  </div>
+                )}
+              </div>
             ) : null}
           </div>
         )}
@@ -668,7 +674,7 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
       <div
         ref={chatRef}
         data-testid="agent-chat-scroll"
-        className={`h-full overflow-auto p-4 sm:p-5 ${showJumpToLatest ? "pb-20" : ""}`}
+        className={`ui-chat-scroll h-full overflow-auto p-4 dark:p-6 sm:p-5 dark:sm:p-7 ${showJumpToLatest ? "pb-20" : ""}`}
         onScroll={() => updatePinnedFromScroll()}
         onWheel={(event) => {
           event.stopPropagation();
@@ -677,7 +683,7 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
           event.stopPropagation();
         }}
       >
-        <div className="relative flex flex-col gap-6 text-[14px] leading-[1.65] text-foreground">
+        <div className="relative flex flex-col gap-6 dark:gap-8 text-[14px] leading-[1.65] text-foreground">
           <div aria-hidden className={`pointer-events-none absolute ${SPINE_LEFT} top-0 bottom-0 w-px bg-border/20`} />
           {historyMaybeTruncated && isAtTop ? (
             <div className="-mx-1 flex items-center justify-between gap-3 rounded-md bg-surface-2 px-3 py-2 shadow-2xs">
@@ -806,7 +812,7 @@ const AgentChatComposer = memo(function AgentChatComposer({
         </span>
       ) : null}
       <button
-        className="rounded-md border border-transparent bg-primary px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] text-primary-foreground transition hover:brightness-105 disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
+        className="ui-btn-primary ui-btn-send px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
         type="button"
         onClick={onSend}
         disabled={sendDisabled}
@@ -826,7 +832,7 @@ export const AgentChatPanel = ({
   stopDisabledReason = null,
   onLoadMoreHistory,
   onOpenSettings,
-  onOpenBrain,
+  onNewSession,
   onModelChange,
   onThinkingChange,
   onDraftChange,
@@ -837,6 +843,7 @@ export const AgentChatPanel = ({
   onResolveExecApproval,
 }: AgentChatPanelProps) => {
   const [draftValue, setDraftValue] = useState(agent.draft);
+  const [newSessionBusy, setNewSessionBusy] = useState(false);
   const draftRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollToBottomNextOutputRef = useRef(false);
   const plainDraftRef = useRef(agent.draft);
@@ -869,7 +876,6 @@ export const AgentChatPanel = ({
         sessionKey: agent.sessionKey,
       };
       plainDraftRef.current = agent.draft;
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setDraftValue(agent.draft);
       return;
     }
@@ -909,18 +915,8 @@ export const AgentChatPanel = ({
     [agent.status, canSend, onDraftChange, onSend]
   );
 
-  const statusColor =
-    agent.status === "running"
-      ? "border border-border/55 bg-accent/70 text-foreground"
-      : agent.status === "error"
-        ? "border border-destructive/35 bg-destructive/12 text-destructive"
-        : "border border-border/70 bg-muted text-muted-foreground";
-  const statusLabel =
-    agent.status === "running"
-      ? "Running"
-      : agent.status === "error"
-        ? "Error"
-        : "Idle";
+  const statusClassName = resolveAgentStatusBadgeClass(agent.status);
+  const statusLabel = resolveAgentStatusLabel(agent.status);
 
   const chatItems = useMemo(
     () =>
@@ -932,12 +928,19 @@ export const AgentChatPanel = ({
     [agent.outputLines, agent.showThinkingTraces, agent.toolCallingEnabled]
   );
   const running = agent.status === "running";
+  const renderBlocks = useMemo(() => buildAgentChatRenderBlocks(chatItems), [chatItems]);
+  const hasActiveStreamingTailInTranscript =
+    running && renderBlocks.length > 0 && !renderBlocks[renderBlocks.length - 1].text;
   const liveAssistantText =
     running && agent.streamText ? normalizeAssistantDisplayText(agent.streamText) : "";
   const liveThinkingText =
     running && agent.showThinkingTraces && agent.thinkingTrace ? agent.thinkingTrace.trim() : "";
   const hasVisibleLiveThinking = Boolean(liveThinkingText.trim());
-  const showTypingIndicator = running && !hasVisibleLiveThinking;
+  const showTypingIndicator =
+    running &&
+    !hasVisibleLiveThinking &&
+    !liveAssistantText &&
+    !hasActiveStreamingTailInTranscript;
 
   const modelOptions = useMemo(
     () =>
@@ -988,6 +991,18 @@ export const AgentChatPanel = ({
     handleSend(draftValue);
   }, [draftValue, handleSend]);
 
+  const handleNewSession = useCallback(async () => {
+    if (!onNewSession || newSessionBusy || !canSend) return;
+    setNewSessionBusy(true);
+    try {
+      await onNewSession();
+    } finally {
+      setNewSessionBusy(false);
+    }
+  }, [canSend, newSessionBusy, onNewSession]);
+
+  const newSessionDisabled = newSessionBusy || !canSend || !onNewSession;
+
   return (
     <div data-agent-panel className="group fade-up relative flex h-full w-full flex-col">
       <div className="px-3 pt-3 sm:px-4 sm:pt-4">
@@ -1025,7 +1040,8 @@ export const AgentChatPanel = ({
                   •
                 </span>
                 <span
-                  className={`ui-badge shrink-0 ${statusColor}`}
+                  className={`ui-badge shrink-0 ${statusClassName}`}
+                  data-status={agent.status}
                 >
                   {statusLabel}
                 </span>
@@ -1035,7 +1051,7 @@ export const AgentChatPanel = ({
                 <label className="flex min-w-0 flex-col gap-1 font-mono text-[12px] font-medium tracking-[0.02em] text-muted-foreground">
                   <span>Model</span>
                   <select
-                    className="ui-input h-8 w-full min-w-0 overflow-hidden text-ellipsis whitespace-nowrap rounded-md px-2 text-[11px] font-semibold text-foreground"
+                    className="ui-input ui-control-important h-8 w-full min-w-0 overflow-hidden text-ellipsis whitespace-nowrap rounded-md px-2 text-[11px] font-semibold text-foreground"
                     aria-label="Model"
                     value={modelValue}
                     onChange={(event) => {
@@ -1057,7 +1073,7 @@ export const AgentChatPanel = ({
                   <label className="flex flex-col gap-1 font-mono text-[12px] font-medium tracking-[0.02em] text-muted-foreground">
                     <span>Thinking</span>
                     <select
-                      className="ui-input h-8 rounded-md px-2 text-[11px] font-semibold text-foreground"
+                      className="ui-input ui-control-important h-8 rounded-md px-2 text-[11px] font-semibold text-foreground"
                       aria-label="Thinking"
                       value={agent.thinkingLevel ?? ""}
                       onChange={(event) => {
@@ -1083,21 +1099,24 @@ export const AgentChatPanel = ({
 
           <div className="mt-0.5 flex items-center gap-2">
             <button
-              className="nodrag ui-btn-icon"
+              className="nodrag ui-btn-primary px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
               type="button"
-              data-testid="agent-brain-toggle"
-              aria-label="Open agent brain files"
-              title="Brain files"
-              onClick={() => onOpenBrain?.()}
+              data-testid="agent-new-session-toggle"
+              aria-label="Start new session"
+              title="Start new session"
+              onClick={() => {
+                void handleNewSession();
+              }}
+              disabled={newSessionDisabled}
             >
-              <Brain className="h-4 w-4" />
+              {newSessionBusy ? "Starting..." : "New session"}
             </button>
             <button
               className="nodrag ui-btn-icon"
               type="button"
               data-testid="agent-settings-toggle"
-              aria-label="Open agent settings"
-              title="Agent settings"
+              aria-label="Open personality"
+              title="Personality"
               onClick={onOpenSettings}
             >
               <Cog className="h-4 w-4" />

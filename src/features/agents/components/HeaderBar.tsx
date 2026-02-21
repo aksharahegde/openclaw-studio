@@ -3,6 +3,7 @@ import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import type { GatewayStatus } from "@/lib/gateway/GatewayClient";
 import { Plug } from "lucide-react";
+import { resolveGatewayStatusBadgeClass } from "./colorSemantics";
 
 type HeaderBarProps = {
   status: GatewayStatus;
@@ -48,8 +49,9 @@ export const HeaderBar = ({
         <div className="flex items-center justify-end gap-1.5">
           {status === "connecting" ? (
             <span
-              className="ui-chip px-3 py-1.5 font-mono text-[10px] font-semibold tracking-[0.08em] text-secondary-foreground"
+              className={`ui-chip px-3 py-1.5 font-mono text-[10px] font-semibold tracking-[0.08em] ${resolveGatewayStatusBadgeClass("connecting")}`}
               data-testid="gateway-connecting-indicator"
+              data-status="connecting"
             >
               Connecting
             </span>
