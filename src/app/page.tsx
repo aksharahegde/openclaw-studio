@@ -1139,6 +1139,18 @@ const AgentStudioPage = () => {
     [handleOpenAgentInspectSidebar]
   );
 
+  const handleToggleAgentPersonality = useCallback(
+    (agentId: string) => {
+      if (inspectSidebar?.agentId === agentId) {
+        setInspectSidebar(null);
+        setMobilePane("chat");
+        return;
+      }
+      handleOpenAgentPersonality(agentId);
+    },
+    [handleOpenAgentPersonality, inspectSidebar?.agentId]
+  );
+
   const runRestartingMutationLifecycle = useCallback(
     async (params: {
       kind: MutationWorkflowKind;
@@ -2358,7 +2370,8 @@ const AgentStudioPage = () => {
                     stopBusy={stopBusyAgentId === focusedAgent.agentId}
                     stopDisabledReason={focusedAgentStopDisabledReason}
                     onLoadMoreHistory={() => loadMoreAgentHistory(focusedAgent.agentId)}
-                    onOpenSettings={() => handleOpenAgentPersonality(focusedAgent.agentId)}
+                    onOpenSettings={() => handleToggleAgentPersonality(focusedAgent.agentId)}
+                    onRename={(name) => handleRenameAgent(focusedAgent.agentId, name)}
                     onNewSession={() => handleNewSession(focusedAgent.agentId)}
                     onModelChange={(value) =>
                       handleModelChange(focusedAgent.agentId, focusedAgent.sessionKey, value)
@@ -2402,7 +2415,7 @@ const AgentStudioPage = () => {
                 <div className="ui-segment grid-cols-4">
                   {(
                     [
-                      { id: "personality", label: "Personality" },
+                      { id: "personality", label: "Behavior" },
                       { id: "capabilities", label: "Capabilities" },
                       { id: "automations", label: "Automations" },
                       { id: "advanced", label: "Advanced" },
@@ -2437,11 +2450,6 @@ const AgentStudioPage = () => {
                     client={client}
                     agents={agents}
                     selectedAgentId={inspectSidebarAgent.agentId}
-                    onRename={(name) => handleRenameAgent(inspectSidebarAgent.agentId, name)}
-                    onClose={() => {
-                      setInspectSidebar(null);
-                      setMobilePane("chat");
-                    }}
                   />
                 ) : (
                   <AgentSettingsPanel

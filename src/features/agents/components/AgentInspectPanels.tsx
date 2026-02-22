@@ -16,7 +16,6 @@ import {
   type AgentPermissionsDraft,
 } from "@/features/agents/operations/agentPermissionsOperation";
 import {
-  AGENT_FILE_META,
   AGENT_FILE_NAMES,
   AGENT_FILE_PLACEHOLDERS,
   PERSONALITY_FILE_LABELS,
@@ -33,30 +32,38 @@ const AgentInspectHeader = ({
   closeTestId,
   closeDisabled,
 }: {
-  label: string;
-  title: string;
+  label?: string;
+  title?: string;
   onClose: () => void;
   closeTestId: string;
   closeDisabled?: boolean;
 }) => {
-  const hasLabel = label.trim().length > 0;
+  const normalizedLabel = label?.trim() ?? "";
+  const normalizedTitle = title?.trim() ?? "";
+  const hasLabel = normalizedLabel.length > 0;
+  const hasTitle = normalizedTitle.length > 0;
+  if (!hasLabel && !hasTitle) {
+    return null;
+  }
   return (
     <div className="flex items-center justify-between pl-4 pr-2 pb-3 pt-2">
       <div>
         {hasLabel ? (
           <div className="font-mono text-[9px] font-medium tracking-[0.04em] text-muted-foreground/58">
-            {label}
+            {normalizedLabel}
           </div>
         ) : null}
-        <div
-          className={
-            hasLabel
-              ? "text-[1.45rem] font-semibold leading-[1.05] tracking-[0.01em] text-foreground"
-              : "font-mono text-[12px] font-semibold tracking-[0.05em] text-foreground"
-          }
-        >
-          {title}
-        </div>
+        {hasTitle ? (
+          <div
+            className={
+              hasLabel
+                ? "text-[1.45rem] font-semibold leading-[1.05] tracking-[0.01em] text-foreground"
+                : "font-mono text-[12px] font-semibold tracking-[0.05em] text-foreground"
+            }
+          >
+            {normalizedTitle}
+          </div>
+        ) : null}
       </div>
       <button
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground/55 transition hover:bg-surface-2 hover:text-muted-foreground/85"
@@ -1129,8 +1136,6 @@ type AgentBrainPanelProps = {
   client: GatewayClient;
   agents: AgentState[];
   selectedAgentId: string | null;
-  onRename: (value: string) => Promise<boolean>;
-  onClose: () => void;
 };
 
 type AgentFilesState = ReturnType<typeof createAgentFilesState>;
@@ -1145,7 +1150,7 @@ type UseAgentFilesEditorResult = {
   setAgentFileContent: (value: string) => void;
   handleAgentFileTabChange: (nextTab: PersonalityFileName) => Promise<void>;
   saveAgentFiles: () => Promise<boolean>;
-  reloadAgentFiles: () => Promise<void>;
+  discardAgentFileChanges: () => void;
 };
 
 const useAgentFilesEditor = (params: {
@@ -1159,6 +1164,15 @@ const useAgentFilesEditor = (params: {
   const [agentFilesSaving, setAgentFilesSaving] = useState(false);
   const [agentFilesDirty, setAgentFilesDirty] = useState(false);
   const [agentFilesError, setAgentFilesError] = useState<string | null>(null);
+  const savedAgentFilesRef = useRef<AgentFilesState>(createAgentFilesState());
+
+  const cloneAgentFilesState = useCallback((source: AgentFilesState): AgentFilesState => {
+    const next = createAgentFilesState();
+    for (const name of AGENT_FILE_NAMES) {
+      next[name] = { ...source[name] };
+    }
+    return next;
+  }, []);
 
   const loadAgentFiles = useCallback(async () => {
     setAgentFilesLoading(true);
@@ -1166,7 +1180,9 @@ const useAgentFilesEditor = (params: {
     try {
       const trimmedAgentId = agentId?.trim();
       if (!trimmedAgentId) {
-        setAgentFiles(createAgentFilesState());
+        const emptyState = createAgentFilesState();
+        savedAgentFilesRef.current = emptyState;
+        setAgentFiles(emptyState);
         setAgentFilesDirty(false);
         setAgentFilesError("Agent ID is missing for this agent.");
         return;
@@ -1189,6 +1205,7 @@ const useAgentFilesEditor = (params: {
           exists: Boolean(file.exists),
         };
       }
+      savedAgentFilesRef.current = nextState;
       setAgentFiles(nextState);
       setAgentFilesDirty(false);
     } catch (err) {
@@ -1229,6 +1246,7 @@ const useAgentFilesEditor = (params: {
           exists: true,
         };
       }
+      savedAgentFilesRef.current = nextState;
       setAgentFiles(nextState);
       setAgentFilesDirty(false);
       return true;
@@ -1264,6 +1282,12 @@ const useAgentFilesEditor = (params: {
     [agentFileTab]
   );
 
+  const discardAgentFileChanges = useCallback(() => {
+    setAgentFiles(cloneAgentFilesState(savedAgentFilesRef.current));
+    setAgentFilesDirty(false);
+    setAgentFilesError(null);
+  }, [cloneAgentFilesState]);
+
   useEffect(() => {
     void loadAgentFiles();
   }, [loadAgentFiles]);
@@ -1284,7 +1308,7 @@ const useAgentFilesEditor = (params: {
     setAgentFileContent,
     handleAgentFileTabChange,
     saveAgentFiles,
-    reloadAgentFiles: loadAgentFiles,
+    discardAgentFileChanges,
   };
 };
 
@@ -1292,8 +1316,6 @@ export const AgentBrainPanel = ({
   client,
   agents,
   selectedAgentId,
-  onRename,
-  onClose,
 }: AgentBrainPanelProps) => {
   const selectedAgent = useMemo(
     () =>
@@ -1313,17 +1335,9 @@ export const AgentBrainPanel = ({
     setAgentFileContent,
     handleAgentFileTabChange,
     saveAgentFiles,
-    reloadAgentFiles,
+    discardAgentFileChanges,
   } = useAgentFilesEditor({ client, agentId: selectedAgent?.agentId ?? null });
   const [previewMode, setPreviewMode] = useState(true);
-  const [nameDraft, setNameDraft] = useState(selectedAgent?.name ?? "");
-  const [renameSaving, setRenameSaving] = useState(false);
-  const [renameError, setRenameError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setNameDraft(selectedAgent?.name ?? "");
-    setRenameError(null);
-  }, [selectedAgent?.agentId, selectedAgent?.name]);
 
   const handleTabChange = useCallback(
     async (nextTab: PersonalityFileName) => {
@@ -1332,41 +1346,23 @@ export const AgentBrainPanel = ({
     [handleAgentFileTabChange]
   );
 
-  const handleRename = useCallback(async () => {
-    const currentName = selectedAgent?.name?.trim() ?? "";
-    const next = nameDraft.trim();
-    if (!next) {
-      setRenameError("Agent name is required.");
-      return;
-    }
-    if (!selectedAgent || !currentName) {
-      setRenameError("No agent selected.");
-      return;
-    }
-    if (next === currentName) {
-      setRenameError(null);
-      return;
-    }
-    setRenameSaving(true);
-    setRenameError(null);
-    try {
-      const ok = await onRename(next);
-      if (!ok) {
-        setRenameError("Failed to rename agent.");
-      }
-    } finally {
-      setRenameSaving(false);
-    }
-  }, [nameDraft, onRename, selectedAgent]);
+  const handleEnterEditMode = useCallback(() => {
+    if (agentFilesLoading || agentFilesSaving) return;
+    setPreviewMode(false);
+  }, [agentFilesLoading, agentFilesSaving]);
 
-  const handleClose = useCallback(async () => {
-    if (agentFilesSaving) return;
-    if (agentFilesDirty) {
-      const saved = await saveAgentFiles();
-      if (!saved) return;
-    }
-    onClose();
-  }, [agentFilesDirty, agentFilesSaving, onClose, saveAgentFiles]);
+  const handleCancelEditMode = useCallback(() => {
+    if (agentFilesLoading || agentFilesSaving) return;
+    discardAgentFileChanges();
+    setPreviewMode(true);
+  }, [agentFilesLoading, agentFilesSaving, discardAgentFileChanges]);
+
+  const handleSaveEditMode = useCallback(async () => {
+    if (agentFilesLoading || agentFilesSaving) return;
+    const saved = await saveAgentFiles();
+    if (!saved) return;
+    setPreviewMode(true);
+  }, [agentFilesLoading, agentFilesSaving, saveAgentFiles]);
 
   return (
     <div
@@ -1374,60 +1370,15 @@ export const AgentBrainPanel = ({
       data-testid="agent-personality-panel"
       style={{ position: "relative", left: "auto", top: "auto", width: "100%", height: "100%" }}
     >
-      <AgentInspectHeader
-        label=""
-        title={selectedAgent?.name ?? "No agent selected"}
-        onClose={() => {
-          void handleClose();
-        }}
-        closeTestId="agent-personality-close"
-        closeDisabled={agentFilesSaving || renameSaving}
-      />
-
-      <div className="flex min-h-0 flex-1 flex-col p-4">
-        <section className="pb-4 pt-1" data-testid="agent-personality-identity">
-          <label className="sidebar-copy mt-1 flex flex-col gap-2 text-[11px] text-muted-foreground">
-            <span className="font-medium text-foreground/88">Agent name</span>
-            <input
-              aria-label="Agent name"
-              className="sidebar-input h-10 rounded-md px-3 text-xs font-semibold text-foreground outline-none"
-              value={nameDraft}
-              disabled={renameSaving}
-              onChange={(event) => setNameDraft(event.target.value)}
-            />
-          </label>
-          {renameError ? (
-            <div className="ui-alert-danger mt-3 rounded-md px-3 py-2 text-xs">
-              {renameError}
-            </div>
-          ) : null}
-          <div className="mt-2">
-            <button
-              className="sidebar-btn-utility w-full px-4 py-2 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:text-muted-foreground/55"
-              type="button"
-              onClick={() => {
-                void handleRename();
-              }}
-              disabled={renameSaving}
-            >
-              {renameSaving ? "Saving..." : "Update Name"}
-            </button>
-          </div>
-        </section>
-
-        <section className="mt-4 flex min-h-0 flex-1 flex-col" data-testid="agent-personality-files">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="font-mono text-[10px] font-semibold tracking-[0.06em] text-muted-foreground">
-              {AGENT_FILE_META[agentFileTab].hint}
-            </div>
-          </div>
+      <div className="flex min-h-0 flex-1 flex-col p-4 pt-0">
+        <section className="flex min-h-0 flex-1 flex-col" data-testid="agent-personality-files">
           {agentFilesError ? (
-            <div className="ui-alert-danger mt-3 rounded-md px-3 py-2 text-xs">
+            <div className="ui-alert-danger mt-2 rounded-md px-3 py-2 text-xs">
               {agentFilesError}
             </div>
           ) : null}
 
-          <div className="ui-segment mt-4 grid grid-cols-3 sm:grid-cols-4">
+          <div className="ui-segment grid grid-cols-3 sm:grid-cols-4">
             {PERSONALITY_FILE_NAMES.map((name) => {
               const active = name === agentFileTab;
               return (
@@ -1447,33 +1398,37 @@ export const AgentBrainPanel = ({
           </div>
 
           <div className="mt-3 flex items-center justify-end gap-1">
-            <button
-              type="button"
-              className="ui-btn-secondary px-2.5 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] text-muted-foreground disabled:opacity-50"
-              disabled={agentFilesLoading || agentFilesSaving || agentFilesDirty}
-              onClick={() => {
-                void reloadAgentFiles();
-              }}
-              title={agentFilesDirty ? "Save changes before reloading." : "Reload from gateway"}
-            >
-              Reload
-            </button>
-            <button
-              type="button"
-              className="ui-segment-item px-2.5 py-1 font-mono text-[10px] font-semibold tracking-[0.06em]"
-              data-active={previewMode ? "true" : "false"}
-              onClick={() => setPreviewMode(true)}
-            >
-              Preview
-            </button>
-            <button
-              type="button"
-              className="ui-segment-item px-2.5 py-1 font-mono text-[10px] font-semibold tracking-[0.06em]"
-              data-active={previewMode ? "false" : "true"}
-              onClick={() => setPreviewMode(false)}
-            >
-              Edit
-            </button>
+            {previewMode ? (
+              <button
+                type="button"
+                className="ui-btn-primary px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
+                disabled={agentFilesLoading || agentFilesSaving}
+                onClick={handleEnterEditMode}
+              >
+                Edit
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="ui-btn-primary px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
+                  disabled={agentFilesLoading || agentFilesSaving || !agentFilesDirty}
+                  onClick={() => {
+                    void handleSaveEditMode();
+                  }}
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  className="ui-btn-secondary px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:opacity-50"
+                  disabled={agentFilesLoading || agentFilesSaving}
+                  onClick={handleCancelEditMode}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
           </div>
 
           <div className="mt-3 min-h-0 flex-1 rounded-lg bg-muted/30 p-3">

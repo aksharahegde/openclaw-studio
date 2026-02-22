@@ -20,9 +20,9 @@ export const PERSONALITY_FILE_NAMES = [
 export type PersonalityFileName = (typeof PERSONALITY_FILE_NAMES)[number];
 
 export const PERSONALITY_FILE_LABELS: Record<PersonalityFileName, string> = {
-  "SOUL.md": "Personality",
-  "AGENTS.md": "Instructions",
-  "USER.md": "About You",
+  "SOUL.md": "Persona",
+  "AGENTS.md": "Directives",
+  "USER.md": "Context",
   "IDENTITY.md": "Identity",
 };
 

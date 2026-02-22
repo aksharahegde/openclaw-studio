@@ -694,6 +694,10 @@ textarea:focus::-webkit-scrollbar {
     0 1px 2px color-mix(in oklch, var(--foreground) 10%, transparent);
 }
 
+.ui-menu-popover {
+  background: var(--popover);
+}
+
 .ui-card-selected {
   border-color: var(--surface-selected-border);
   background: var(--surface-selected);
@@ -815,9 +819,10 @@ textarea:focus::-webkit-scrollbar {
 }
 
 .ui-btn-icon {
+  --ui-btn-icon-size: 2.25rem;
   display: inline-flex;
-  height: 2.25rem;
-  width: 2.25rem;
+  height: var(--ui-btn-icon-size);
+  width: var(--ui-btn-icon-size);
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-small);
@@ -828,6 +833,30 @@ textarea:focus::-webkit-scrollbar {
     border-color 180ms ease,
     background-color 180ms ease,
     color 180ms ease;
+}
+
+.ui-btn-icon-sm {
+  --ui-btn-icon-size: 1.95rem;
+}
+
+.ui-btn-icon-xs {
+  --ui-btn-icon-size: 1.6rem;
+}
+
+.agent-avatar-shuffle-btn {
+  border: 1px solid color-mix(in oklch, var(--border) 74%, transparent);
+  background: color-mix(in oklch, var(--surface-1) 92%, var(--surface-2));
+  color: color-mix(in oklch, var(--foreground) 80%, var(--muted-foreground) 20%);
+  box-shadow: 0 1px 2px color-mix(in oklch, var(--foreground) 14%, transparent);
+  opacity: 0.92;
+}
+
+.ui-btn-icon.agent-avatar-shuffle-btn:hover,
+.ui-btn-icon.agent-avatar-shuffle-btn:focus-visible {
+  opacity: 1;
+  background: color-mix(in oklch, var(--surface-1) 98%, var(--surface-2));
+  color: color-mix(in oklch, var(--foreground) 92%, var(--muted-foreground) 8%);
+  box-shadow: 0 1px 3px color-mix(in oklch, var(--foreground) 18%, transparent);
 }
 
 .ui-topbar {
@@ -1219,6 +1248,20 @@ textarea:focus::-webkit-scrollbar {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
   box-shadow: none !important;
+}
+
+.agent-rename-input:focus,
+.agent-rename-input:focus-visible {
+  outline: none !important;
+  outline-offset: 0;
+  border-color: color-mix(in oklch, var(--ring) 62%, var(--sidebar-input-border));
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--ring) 20%, transparent) !important;
+}
+
+.agent-rename-control:focus-visible {
+  outline: none !important;
+  outline-offset: 0;
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--ring) 20%, transparent) !important;
 }
 
 @keyframes fadeUp {
