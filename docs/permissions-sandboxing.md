@@ -46,10 +46,10 @@ Agent creation is intentionally lightweight:
 - `src/features/agents/operations/mutationLifecycleWorkflow.ts` applies queue/guard behavior and calls create.
 - `src/lib/gateway/agentConfig.ts` (`createGatewayAgent`) performs `config.get` + `agents.create`.
 
-After creation, Studio applies a safe default capability envelope:
-- Commands: `Ask`
-- Web access: `Off`
-- File tools: `Off`
+After creation, Studio applies a permissive default capability envelope:
+- Commands: `Auto`
+- Web access: `On`
+- File tools: `On`
 
 Implementation:
 - `src/app/page.tsx` (`handleCreateAgentSubmit`) applies `CREATE_AGENT_DEFAULT_PERMISSIONS`.
@@ -332,7 +332,7 @@ Code:
 
 UI model:
 - Direct controls: `Command mode` (`Off`/`Ask`/`Auto`), `Web access` (`Off`/`On`), `File tools` (`Off`/`On`)
-- Create modal remains permission-light (name/avatar only) and create flow immediately applies safe defaults (`Ask`, web off, file tools off).
+- Create modal remains permission-light (name/avatar only) and create flow immediately applies permissive defaults (`Auto`, web on, file tools on).
 
 Why it matters:
 - You can have exec approvals configured but still be unable to run commands if `group:runtime` is denied.

@@ -49,10 +49,34 @@ const hasNonEmptyToken = (params) => {
   return typeof raw === "string" && raw.trim().length > 0;
 };
 
-const hasDeviceSignature = (params) => {
-  const raw =
-    params && isObject(params) && isObject(params.device) ? params.device.signature : null;
+const hasNonEmptyPassword = (params) => {
+  const raw = params && isObject(params) && isObject(params.auth) ? params.auth.password : "";
   return typeof raw === "string" && raw.trim().length > 0;
+};
+
+const hasNonEmptyDeviceToken = (params) => {
+  const raw = params && isObject(params) && isObject(params.auth) ? params.auth.deviceToken : "";
+  return typeof raw === "string" && raw.trim().length > 0;
+};
+
+const hasCompleteDeviceAuth = (params) => {
+  const device = params && isObject(params) && isObject(params.device) ? params.device : null;
+  if (!device) {
+    return false;
+  }
+  const id = typeof device.id === "string" ? device.id.trim() : "";
+  const publicKey = typeof device.publicKey === "string" ? device.publicKey.trim() : "";
+  const signature = typeof device.signature === "string" ? device.signature.trim() : "";
+  const nonce = typeof device.nonce === "string" ? device.nonce.trim() : "";
+  const signedAt = device.signedAt;
+  return (
+    id.length > 0 &&
+    publicKey.length > 0 &&
+    signature.length > 0 &&
+    nonce.length > 0 &&
+    Number.isFinite(signedAt) &&
+    signedAt >= 0
+  );
 };
 
 function createGatewayProxy(options) {
@@ -118,6 +142,11 @@ function createGatewayProxy(options) {
           return;
         }
         connectRequestId = id;
+        const browserHasAuth =
+          hasNonEmptyToken(parsed.params) ||
+          hasNonEmptyPassword(parsed.params) ||
+          hasNonEmptyDeviceToken(parsed.params) ||
+          hasCompleteDeviceAuth(parsed.params);
 
         let upstreamUrl = "";
         let upstreamToken = "";
@@ -138,7 +167,7 @@ function createGatewayProxy(options) {
           );
           return;
         }
-        if (!upstreamToken) {
+        if (!upstreamToken && !browserHasAuth) {
           sendConnectError(
             "studio.gateway_token_missing",
             "Upstream gateway token is not configured on the Studio host."
@@ -161,7 +190,7 @@ function createGatewayProxy(options) {
 
         upstreamWs.on("open", () => {
           upstreamReady = true;
-          if (hasNonEmptyToken(parsed.params) || hasDeviceSignature(parsed.params)) {
+          if (browserHasAuth) {
             upstreamWs.send(JSON.stringify(parsed));
             return;
           }

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AgentState } from "@/features/agents/state/store";
 import { sendChatMessageViaStudio } from "@/features/agents/operations/chatSendOperation";
+import { GatewayResponseError } from "@/lib/gateway/errors";
 import { formatMetaMarkdown } from "@/lib/text/message-extract";
 
 const createAgent = (overrides?: Partial<AgentState>): AgentState => {
@@ -48,6 +49,12 @@ const createAgent = (overrides?: Partial<AgentState>): AgentState => {
     historyMaybeTruncated: merged.historyMaybeTruncated ?? false,
   };
 };
+
+const createWebchatBlockedPatchError = () =>
+  new GatewayResponseError({
+    code: "INVALID_REQUEST",
+    message: "webchat clients cannot patch sessions; use chat.send for session-scoped updates",
+  });
 
 describe("sendChatMessageViaStudio", () => {
   it("handles_reset_command", async () => {
@@ -134,6 +141,154 @@ describe("sendChatMessageViaStudio", () => {
     });
   });
 
+  it("continues_send_when_webchat_patch_is_blocked", async () => {
+    const agent = createAgent({ sessionSettingsSynced: false, sessionCreated: false });
+    const dispatch = vi.fn();
+    const call = vi.fn(async (method: string, payload?: unknown) => {
+      if (method === "sessions.patch") {
+        throw createWebchatBlockedPatchError();
+      }
+      if (method === "chat.send") {
+        const runId =
+          payload &&
+          typeof payload === "object" &&
+          "idempotencyKey" in payload &&
+          typeof payload.idempotencyKey === "string"
+            ? payload.idempotencyKey
+            : "run";
+        return { runId, status: "started" };
+      }
+      return { ok: true };
+    });
+
+    await sendChatMessageViaStudio({
+      client: { call },
+      dispatch,
+      getAgent: () => agent,
+      agentId: agent.agentId,
+      sessionKey: agent.sessionKey,
+      message: "hello",
+      now: () => 1234,
+      generateRunId: () => "run-1",
+    });
+
+    const methods = call.mock.calls.map((entry) => entry[0]);
+    expect(methods).toEqual(["sessions.patch", "chat.send"]);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "updateAgent",
+      agentId: agent.agentId,
+      patch: { sessionSettingsSynced: true, sessionCreated: true },
+    });
+
+    const errorLines = dispatch.mock.calls
+      .map((entry) => entry[0])
+      .filter(
+        (
+          action
+        ): action is {
+          type: "appendOutput";
+          line: string;
+        } =>
+          action &&
+          typeof action === "object" &&
+          "type" in action &&
+          action.type === "appendOutput" &&
+          "line" in action &&
+          typeof action.line === "string" &&
+          action.line.startsWith("Error:")
+      )
+      .map((action) => action.line);
+    expect(errorLines).toEqual([]);
+  });
+
+  it("fails_send_when_patch_error_is_not_webchat_blocked", async () => {
+    const agent = createAgent({ sessionSettingsSynced: false, sessionCreated: false });
+    const dispatch = vi.fn();
+    const call = vi.fn(async (method: string) => {
+      if (method === "sessions.patch") {
+        throw new GatewayResponseError({
+          code: "INVALID_REQUEST",
+          message: "invalid model ref",
+        });
+      }
+      return { ok: true };
+    });
+
+    await sendChatMessageViaStudio({
+      client: { call },
+      dispatch,
+      getAgent: () => agent,
+      agentId: agent.agentId,
+      sessionKey: agent.sessionKey,
+      message: "hello",
+      now: () => 1234,
+      generateRunId: () => "run-1",
+    });
+
+    const methods = call.mock.calls.map((entry) => entry[0]);
+    expect(methods).toEqual(["sessions.patch"]);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "appendOutput",
+      agentId: agent.agentId,
+      line: "Error: invalid model ref",
+    });
+  });
+
+  it("suppresses_patch_retry_after_webchat_blocked_patch_error", async () => {
+    let agent = createAgent({ sessionSettingsSynced: false, sessionCreated: false });
+    const dispatch = vi.fn(
+      (action: { type: string; agentId?: string; patch?: Partial<AgentState> }) => {
+        if (action.type !== "updateAgent" || action.agentId !== agent.agentId || !action.patch) {
+          return;
+        }
+        agent = { ...agent, ...action.patch };
+      }
+    );
+    const call = vi.fn(async (method: string, payload?: unknown) => {
+      if (method === "sessions.patch") {
+        throw createWebchatBlockedPatchError();
+      }
+      if (method === "chat.send") {
+        const runId =
+          payload &&
+          typeof payload === "object" &&
+          "idempotencyKey" in payload &&
+          typeof payload.idempotencyKey === "string"
+            ? payload.idempotencyKey
+            : "run";
+        return { runId, status: "started" };
+      }
+      return { ok: true };
+    });
+
+    await sendChatMessageViaStudio({
+      client: { call },
+      dispatch,
+      getAgent: () => agent,
+      agentId: agent.agentId,
+      sessionKey: agent.sessionKey,
+      message: "first",
+      now: () => 1234,
+      generateRunId: () => "run-1",
+    });
+    await sendChatMessageViaStudio({
+      client: { call },
+      dispatch,
+      getAgent: () => agent,
+      agentId: agent.agentId,
+      sessionKey: agent.sessionKey,
+      message: "second",
+      now: () => 1240,
+      generateRunId: () => "run-2",
+    });
+
+    const methods = call.mock.calls.map((entry) => entry[0]);
+    expect(methods.filter((method) => method === "sessions.patch")).toHaveLength(1);
+    expect(methods.filter((method) => method === "chat.send")).toHaveLength(2);
+    expect(agent.sessionSettingsSynced).toBe(true);
+    expect(agent.sessionCreated).toBe(true);
+  });
+
   it("syncs exec session overrides for ask-first agents", async () => {
     const agent = createAgent({
       sessionSettingsSynced: false,
@@ -180,7 +335,7 @@ describe("sendChatMessageViaStudio", () => {
   it("does_not_sync_session_settings_when_already_synced", async () => {
     const agent = createAgent({ sessionSettingsSynced: true });
     const dispatch = vi.fn();
-    const call = vi.fn(async () => ({ ok: true }));
+    const call = vi.fn(async () => ({ runId: "run-1", status: "started" }));
 
     await sendChatMessageViaStudio({
       client: { call },
@@ -201,6 +356,124 @@ describe("sendChatMessageViaStudio", () => {
       "sessions.patch",
       expect.anything()
     );
+  });
+
+  it("clears_running_state_for_unknown_success_payload_shape", async () => {
+    const agent = createAgent({ sessionSettingsSynced: true, sessionCreated: true });
+    const dispatch = vi.fn();
+    const call = vi.fn(async () => ({ ok: true }));
+
+    await sendChatMessageViaStudio({
+      client: { call },
+      dispatch,
+      getAgent: () => agent,
+      agentId: agent.agentId,
+      sessionKey: agent.sessionKey,
+      message: "hello",
+      now: () => 1234,
+      generateRunId: () => "run-1",
+    });
+
+    const idlePatchAction = dispatch.mock.calls
+      .map((entry) => entry[0])
+      .find(
+        (action) =>
+          action?.type === "updateAgent" &&
+          action?.agentId === agent.agentId &&
+          action?.patch?.status === "idle" &&
+          action?.patch?.runId === null
+      );
+    expect(idlePatchAction).toBeTruthy();
+  });
+
+  it("clears_running_state_for_stop_style_immediate_success_payload", async () => {
+    const agent = createAgent({ sessionSettingsSynced: true, sessionCreated: true });
+    const dispatch = vi.fn();
+    const call = vi.fn(async () => ({ ok: true, aborted: false, runIds: [] }));
+
+    await sendChatMessageViaStudio({
+      client: { call },
+      dispatch,
+      getAgent: () => agent,
+      agentId: agent.agentId,
+      sessionKey: agent.sessionKey,
+      message: "stop please",
+      now: () => 1234,
+      generateRunId: () => "run-1",
+    });
+
+    const idlePatchAction = dispatch.mock.calls
+      .map((entry) => entry[0])
+      .find(
+        (action) =>
+          action?.type === "updateAgent" &&
+          action?.agentId === agent.agentId &&
+          action?.patch?.status === "idle" &&
+          action?.patch?.runId === null &&
+          action?.patch?.runStartedAt === null &&
+          action?.patch?.streamText === null &&
+          action?.patch?.thinkingTrace === null
+      );
+    expect(idlePatchAction).toBeTruthy();
+  });
+
+  it("keeps_running_state_for_matching_streaming_status_payloads", async () => {
+    const payloads = [{ runId: "run-1", status: "started" }, { runId: "run-1", status: "in_flight" }];
+
+    for (const payload of payloads) {
+      const agent = createAgent({ sessionSettingsSynced: true, sessionCreated: true });
+      const dispatch = vi.fn();
+      const call = vi.fn(async () => payload);
+
+      await sendChatMessageViaStudio({
+        client: { call },
+        dispatch,
+        getAgent: () => agent,
+        agentId: agent.agentId,
+        sessionKey: agent.sessionKey,
+        message: "hello",
+        now: () => 1234,
+        generateRunId: () => "run-1",
+      });
+
+      const idlePatchAction = dispatch.mock.calls
+        .map((entry) => entry[0])
+        .find(
+          (action) =>
+            action?.type === "updateAgent" &&
+            action?.agentId === agent.agentId &&
+            action?.patch?.status === "idle"
+        );
+      expect(idlePatchAction).toBeUndefined();
+    }
+  });
+
+  it("clears_running_state_for_streaming_shape_with_mismatched_run_id", async () => {
+    const agent = createAgent({ sessionSettingsSynced: true, sessionCreated: true });
+    const dispatch = vi.fn();
+    const call = vi.fn(async () => ({ runId: "different-run", status: "started" }));
+
+    await sendChatMessageViaStudio({
+      client: { call },
+      dispatch,
+      getAgent: () => agent,
+      agentId: agent.agentId,
+      sessionKey: agent.sessionKey,
+      message: "hello",
+      now: () => 1234,
+      generateRunId: () => "run-1",
+    });
+
+    const idlePatchAction = dispatch.mock.calls
+      .map((entry) => entry[0])
+      .find(
+        (action) =>
+          action?.type === "updateAgent" &&
+          action?.agentId === agent.agentId &&
+          action?.patch?.status === "idle" &&
+          action?.patch?.runId === null
+      );
+    expect(idlePatchAction).toBeTruthy();
   });
 
   it("supports_internal_send_without_local_user_echo", async () => {

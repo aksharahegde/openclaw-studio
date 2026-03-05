@@ -44,7 +44,10 @@ export type CronJobSummary = {
   id: string;
   name: string;
   agentId?: string;
+  sessionKey?: string;
+  description?: string;
   enabled: boolean;
+  deleteAfterRun?: boolean;
   updatedAtMs: number;
   schedule: CronSchedule;
   sessionTarget: CronSessionTarget;
@@ -64,6 +67,7 @@ export const sortCronJobsByUpdatedAt = (jobs: CronJobSummary[]) =>
 export type CronJobCreateInput = {
   name: string;
   agentId: string;
+  sessionKey?: string;
   description?: string;
   enabled?: boolean;
   deleteAfterRun?: boolean;
@@ -137,6 +141,20 @@ export type CronRunResult =
 
 export type CronRemoveResult = { ok: true; removed: boolean } | { ok: false; removed: false };
 
+export type CronJobRestoreInput = {
+  name: string;
+  agentId: string;
+  sessionKey?: string;
+  description?: string;
+  enabled: boolean;
+  deleteAfterRun?: boolean;
+  schedule: CronSchedule;
+  sessionTarget: CronSessionTarget;
+  wakeMode: CronWakeMode;
+  payload: CronPayload;
+  delivery?: CronDelivery;
+};
+
 const resolveJobId = (jobId: string): string => {
   const trimmed = jobId.trim();
   if (!trimmed) {
@@ -202,19 +220,74 @@ export const createCronJob = async (
   });
 };
 
-export const removeCronJobsForAgent = async (client: GatewayClient, agentId: string): Promise<number> => {
+const toCronJobRestoreInput = (job: CronJobSummary, agentId: string): CronJobRestoreInput => ({
+  name: job.name,
+  agentId,
+  sessionKey: job.sessionKey,
+  description: job.description,
+  enabled: job.enabled,
+  deleteAfterRun: job.deleteAfterRun,
+  schedule: job.schedule,
+  sessionTarget: job.sessionTarget,
+  wakeMode: job.wakeMode,
+  payload: job.payload,
+  delivery: job.delivery,
+});
+
+const restoreRemovedJobsBestEffort = async (
+  client: GatewayClient,
+  removedJobs: CronJobRestoreInput[]
+): Promise<void> => {
+  if (removedJobs.length === 0) return;
+  try {
+    await restoreCronJobs(client, removedJobs);
+  } catch (restoreErr) {
+    console.error("Failed to restore cron jobs after partial deletion failure.", restoreErr);
+  }
+};
+
+export const restoreCronJobs = async (
+  client: GatewayClient,
+  jobs: CronJobRestoreInput[]
+): Promise<void> => {
+  for (const job of jobs) {
+    try {
+      await createCronJob(client, job);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`Failed to restore cron job "${job.name}" (${job.agentId}): ${message}`);
+    }
+  }
+};
+
+export const removeCronJobsForAgentWithBackup = async (
+  client: GatewayClient,
+  agentId: string
+): Promise<CronJobRestoreInput[]> => {
   const id = resolveAgentId(agentId);
   const result = await listCronJobs(client, { includeDisabled: true });
   const jobs = result.jobs.filter((job) => job.agentId?.trim() === id);
-  let removed = 0;
+  const removedJobs: CronJobRestoreInput[] = [];
   for (const job of jobs) {
-    const removeResult = await removeCronJob(client, job.id);
+    let removeResult: CronRemoveResult;
+    try {
+      removeResult = await removeCronJob(client, job.id);
+    } catch (err) {
+      await restoreRemovedJobsBestEffort(client, removedJobs);
+      throw err;
+    }
     if (!removeResult.ok) {
+      await restoreRemovedJobsBestEffort(client, removedJobs);
       throw new Error(`Failed to delete cron job "${job.name}" (${job.id}).`);
     }
     if (removeResult.removed) {
-      removed += 1;
+      removedJobs.push(toCronJobRestoreInput(job, id));
     }
   }
-  return removed;
+  return removedJobs;
+};
+
+export const removeCronJobsForAgent = async (client: GatewayClient, agentId: string): Promise<number> => {
+  const removedJobs = await removeCronJobsForAgentWithBackup(client, agentId);
+  return removedJobs.length;
 };

@@ -1,6 +1,10 @@
 import type { GatewayClient } from "@/lib/gateway/GatewayClient";
 import { fetchJson as defaultFetchJson } from "@/lib/http";
-import { removeCronJobsForAgent } from "@/lib/cron/types";
+import {
+  removeCronJobsForAgentWithBackup,
+  restoreCronJobs,
+  type CronJobRestoreInput,
+} from "@/lib/cron/types";
 import { deleteGatewayAgent } from "@/lib/gateway/agentConfig";
 
 type FetchJson = typeof defaultFetchJson;
@@ -19,7 +23,8 @@ export type RestoreAgentStateResult = {
 type DeleteAgentTransactionDeps = {
   trashAgentState: (agentId: string) => Promise<TrashAgentStateResult>;
   restoreAgentState: (agentId: string, trashDir: string) => Promise<RestoreAgentStateResult>;
-  removeCronJobsForAgent: (agentId: string) => Promise<void>;
+  removeCronJobsForAgentWithBackup: (agentId: string) => Promise<CronJobRestoreInput[]>;
+  restoreCronJobs: (jobs: CronJobRestoreInput[]) => Promise<void>;
   deleteGatewayAgent: (agentId: string) => Promise<void>;
   logError?: (message: string, error: unknown) => void;
 };
@@ -39,12 +44,20 @@ const runDeleteFlow = async (
   }
 
   const trashed = await deps.trashAgentState(trimmedAgentId);
+  let removedCronJobs: CronJobRestoreInput[] = [];
 
   try {
-    await deps.removeCronJobsForAgent(trimmedAgentId);
+    removedCronJobs = await deps.removeCronJobsForAgentWithBackup(trimmedAgentId);
     await deps.deleteGatewayAgent(trimmedAgentId);
     return { trashed, restored: null };
   } catch (err) {
+    if (removedCronJobs.length > 0) {
+      try {
+        await deps.restoreCronJobs(removedCronJobs);
+      } catch (restoreCronErr) {
+        deps.logError?.("Failed to restore removed cron jobs.", restoreCronErr);
+      }
+    }
     if (trashed.moved.length > 0) {
       try {
         await deps.restoreAgentState(trimmedAgentId, trashed.trashDir);
@@ -89,8 +102,11 @@ export const deleteAgentViaStudio = async (params: {
         );
         return result;
       },
-      removeCronJobsForAgent: async (agentId) => {
-        await removeCronJobsForAgent(params.client, agentId);
+      removeCronJobsForAgentWithBackup: async (agentId) => {
+        return await removeCronJobsForAgentWithBackup(params.client, agentId);
+      },
+      restoreCronJobs: async (jobs) => {
+        await restoreCronJobs(params.client, jobs);
       },
       deleteGatewayAgent: async (agentId) => {
         await deleteGatewayAgent({ client: params.client, agentId });

@@ -1,29 +1,39 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Bell, CalendarDays, ExternalLink, ListChecks, Play, Sun, Trash2, X } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  AlertTriangle,
+  Bell,
+  CalendarDays,
+  ExternalLink,
+  ListChecks,
+  Play,
+  Sun,
+  Trash2,
+  X,
+  ChevronRight,
+} from "lucide-react";
 
 import type { AgentState } from "@/features/agents/state/store";
 import type { CronCreateDraft, CronCreateTemplateId } from "@/lib/cron/createPayloadBuilder";
 import { formatCronPayload, formatCronSchedule, type CronJobSummary } from "@/lib/cron/types";
 import type { GatewayClient } from "@/lib/gateway/GatewayClient";
+import type { SkillStatusReport } from "@/lib/skills/types";
 import { readGatewayAgentFile, writeGatewayAgentFile } from "@/lib/gateway/agentFiles";
 import {
   resolveExecutionRoleFromAgent,
   resolvePresetDefaultsForRole,
   type AgentPermissionsDraft,
 } from "@/features/agents/operations/agentPermissionsOperation";
+import { AgentSkillsPanel } from "@/features/agents/components/AgentSkillsPanel";
+import { SystemSkillsPanel } from "@/features/agents/components/SystemSkillsPanel";
 import {
   AGENT_FILE_NAMES,
-  AGENT_FILE_PLACEHOLDERS,
-  PERSONALITY_FILE_LABELS,
-  PERSONALITY_FILE_NAMES,
-  type PersonalityFileName,
+  type AgentFileName,
   createAgentFilesState,
   isAgentFileName,
 } from "@/lib/agents/agentFiles";
+import { parsePersonalityFiles, serializePersonalityFiles } from "@/lib/agents/personalityBuilder";
 
 const AgentInspectHeader = ({
   label,
@@ -81,7 +91,8 @@ const AgentInspectHeader = ({
 
 type AgentSettingsPanelProps = {
   agent: AgentState;
-  mode?: "capabilities" | "automations" | "advanced";
+  mode?: "capabilities" | "skills" | "system" | "automations" | "advanced";
+  showHeader?: boolean;
   onClose: () => void;
   permissionsDraft?: AgentPermissionsDraft;
   onUpdateAgentPermissions?: (draft: AgentPermissionsDraft) => Promise<void> | void;
@@ -99,6 +110,26 @@ type AgentSettingsPanelProps = {
   cronCreateBusy?: boolean;
   onCreateCronJob?: (draft: CronCreateDraft) => Promise<void> | void;
   controlUiUrl?: string | null;
+  skillsReport?: SkillStatusReport | null;
+  skillsLoading?: boolean;
+  skillsError?: string | null;
+  skillsBusy?: boolean;
+  skillsBusyKey?: string | null;
+  skillMessages?: Record<string, { kind: "success" | "error"; message: string }>;
+  skillApiKeyDrafts?: Record<string, string>;
+  defaultAgentScopeWarning?: string | null;
+  systemInitialSkillKey?: string | null;
+  onSystemInitialSkillHandled?: () => void;
+  skillsAllowlist?: string[] | undefined;
+  onSetSkillEnabled?: (skillName: string, enabled: boolean) => Promise<void> | void;
+  onOpenSystemSetup?: (skillKey?: string) => void;
+  onSetSkillGlobalEnabled?: (skillKey: string, enabled: boolean) => Promise<void> | void;
+  onInstallSkill?: (skillKey: string, name: string, installId: string) => Promise<void> | void;
+  onRemoveSkill?: (
+    skill: { skillKey: string; source: string; baseDir: string }
+  ) => Promise<void> | void;
+  onSkillApiKeyChange?: (skillKey: string, value: string) => Promise<void> | void;
+  onSaveSkillApiKey?: (skillKey: string) => Promise<void> | void;
 };
 
 const formatCronStateLine = (job: CronJobSummary): string | null => {
@@ -188,6 +219,11 @@ const createInitialCronDraft = (): CronCreateDraft => ({
   deliveryChannel: "last",
 });
 
+const arePermissionsDraftEqual = (a: AgentPermissionsDraft, b: AgentPermissionsDraft): boolean =>
+  a.commandMode === b.commandMode &&
+  a.webAccess === b.webAccess &&
+  a.fileTools === b.fileTools;
+
 const applyTemplateDefaults = (templateId: CronCreateTemplateId, current: CronCreateDraft): CronCreateDraft => {
   const nextTimeZone = (current.everyTimeZone ?? "").trim() || resolveLocalTimeZone();
   const base = {
@@ -259,6 +295,7 @@ const applyTemplateDefaults = (templateId: CronCreateTemplateId, current: CronCr
 export const AgentSettingsPanel = ({
   agent,
   mode = "capabilities",
+  showHeader = true,
   onClose,
   permissionsDraft,
   onUpdateAgentPermissions = () => {},
@@ -276,16 +313,38 @@ export const AgentSettingsPanel = ({
   cronCreateBusy = false,
   onCreateCronJob = () => {},
   controlUiUrl = null,
+  skillsReport = null,
+  skillsLoading = false,
+  skillsError = null,
+  skillsBusy = false,
+  skillsBusyKey = null,
+  skillMessages = {},
+  skillApiKeyDrafts = {},
+  defaultAgentScopeWarning = null,
+  systemInitialSkillKey = null,
+  onSystemInitialSkillHandled = () => {},
+  skillsAllowlist,
+  onSetSkillEnabled = () => {},
+  onOpenSystemSetup = () => {},
+  onSetSkillGlobalEnabled = () => {},
+  onInstallSkill = () => {},
+  onRemoveSkill = () => {},
+  onSkillApiKeyChange = () => {},
+  onSaveSkillApiKey = () => {},
 }: AgentSettingsPanelProps) => {
-  const [permissionsDraftValue, setPermissionsDraftValue] = useState<AgentPermissionsDraft>(
-    permissionsDraft ?? resolvePresetDefaultsForRole(resolveExecutionRoleFromAgent(agent))
-  );
+  const initialPermissionsDraft =
+    permissionsDraft ?? resolvePresetDefaultsForRole(resolveExecutionRoleFromAgent(agent));
+  const [permissionsBaselineValue, setPermissionsBaselineValue] =
+    useState<AgentPermissionsDraft>(initialPermissionsDraft);
+  const [permissionsDraftValue, setPermissionsDraftValue] =
+    useState<AgentPermissionsDraft>(initialPermissionsDraft);
   const [permissionsSaving, setPermissionsSaving] = useState(false);
   const [permissionsSaveState, setPermissionsSaveState] = useState<
     "idle" | "saving" | "saved" | "error"
   >("idle");
   const [permissionsSaveError, setPermissionsSaveError] = useState<string | null>(null);
   const permissionsSaveTimerRef = useRef<number | null>(null);
+  const permissionsDraftAgentIdRef = useRef(agent.agentId);
   const [expandedCronJobIds, setExpandedCronJobIds] = useState<Set<string>>(() => new Set());
   const [cronCreateOpen, setCronCreateOpen] = useState(false);
   const [cronCreateStep, setCronCreateStep] = useState(0);
@@ -298,19 +357,22 @@ export const AgentSettingsPanel = ({
     [permissionsDraft, resolvedExecutionRole]
   );
   const permissionsDirty = useMemo(
-    () =>
-      permissionsDraftValue.commandMode !== resolvedPermissionsDraft.commandMode ||
-      permissionsDraftValue.webAccess !== resolvedPermissionsDraft.webAccess ||
-      permissionsDraftValue.fileTools !== resolvedPermissionsDraft.fileTools,
-    [permissionsDraftValue, resolvedPermissionsDraft]
+    () => !arePermissionsDraftEqual(permissionsDraftValue, permissionsBaselineValue),
+    [permissionsBaselineValue, permissionsDraftValue]
   );
 
   useEffect(() => {
+    const agentChanged = permissionsDraftAgentIdRef.current !== agent.agentId;
+    permissionsDraftAgentIdRef.current = agent.agentId;
+    setPermissionsBaselineValue(resolvedPermissionsDraft);
+    if (!agentChanged && (permissionsSaving || permissionsDirty)) {
+      return;
+    }
     setPermissionsDraftValue(resolvedPermissionsDraft);
     setPermissionsSaveState("idle");
     setPermissionsSaveError(null);
     setPermissionsSaving(false);
-  }, [agent.agentId, resolvedExecutionRole, resolvedPermissionsDraft]);
+  }, [agent.agentId, permissionsDirty, permissionsSaving, resolvedPermissionsDraft]);
 
   const runPermissionsSave = useCallback(async (draft: AgentPermissionsDraft) => {
     if (permissionsSaving) return;
@@ -442,7 +504,14 @@ export const AgentSettingsPanel = ({
     }
   };
 
-  const panelLabel = mode === "advanced" ? "Advanced" : "";
+  const panelLabel =
+    mode === "advanced"
+      ? "Advanced"
+      : mode === "skills"
+        ? "Skills"
+        : mode === "system"
+          ? "System setup"
+          : "";
   const canOpenControlUi = typeof controlUiUrl === "string" && controlUiUrl.trim().length > 0;
   const timedAutomationStepMeta =
     TIMED_AUTOMATION_STEP_META[cronCreateStep] ??
@@ -454,12 +523,14 @@ export const AgentSettingsPanel = ({
       data-testid="agent-settings-panel"
       style={{ position: "relative", left: "auto", top: "auto", width: "100%", height: "100%" }}
     >
-      <AgentInspectHeader
-        label={panelLabel}
-        title={agent.name}
-        onClose={onClose}
-        closeTestId="agent-settings-close"
-      />
+      {showHeader ? (
+        <AgentInspectHeader
+          label={panelLabel}
+          title={agent.name}
+          onClose={onClose}
+          closeTestId="agent-settings-close"
+        />
+      ) : null}
 
       <div className="flex flex-col gap-0 px-5 pb-5">
         {mode === "capabilities" ? (
@@ -508,79 +579,75 @@ export const AgentSettingsPanel = ({
                   </div>
                 </div>
                 <div className="ui-settings-row flex min-h-[68px] items-center justify-between gap-6 px-4 py-3">
-                  <div className="sidebar-copy flex flex-col">
-                    <span className="text-[11px] font-medium text-foreground/88">Web access</span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-label="Web access"
+                      aria-checked={permissionsDraftValue.webAccess}
+                      className={`ui-switch self-center ${permissionsDraftValue.webAccess ? "ui-switch--on" : ""}`}
+                      onClick={() =>
+                        setPermissionsDraftValue((current) => ({
+                          ...current,
+                          webAccess: !current.webAccess,
+                        }))
+                      }
+                    >
+                      <span className="ui-switch-thumb" />
+                    </button>
+                    <div className="sidebar-copy flex flex-col">
+                      <span className="text-[11px] font-medium text-foreground/88">Web access</span>
+                      <span className="text-[10px] text-muted-foreground/70">
+                        Allows this agent to fetch live web results.
+                      </span>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-label="Web access"
-                    aria-checked={permissionsDraftValue.webAccess}
-                    className={`ui-switch self-center ${permissionsDraftValue.webAccess ? "ui-switch--on" : ""}`}
-                    onClick={() =>
-                      setPermissionsDraftValue((current) => ({
-                        ...current,
-                        webAccess: !current.webAccess,
-                      }))
-                    }
-                  >
-                    <span className="ui-switch-thumb" />
-                  </button>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground/55" aria-hidden="true" />
                 </div>
                 <div className="ui-settings-row flex min-h-[68px] items-center justify-between gap-6 px-4 py-3">
-                  <div className="sidebar-copy flex flex-col">
-                    <span className="text-[11px] font-medium text-foreground/88">File tools</span>
-                    <span className="text-[10px] text-muted-foreground/70">
-                      Lets this agent read and edit files in its workspace.
-                    </span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-label="File tools"
+                      aria-checked={permissionsDraftValue.fileTools}
+                      className={`ui-switch self-center ${permissionsDraftValue.fileTools ? "ui-switch--on" : ""}`}
+                      onClick={() =>
+                        setPermissionsDraftValue((current) => ({
+                          ...current,
+                          fileTools: !current.fileTools,
+                        }))
+                      }
+                    >
+                      <span className="ui-switch-thumb" />
+                    </button>
+                    <div className="sidebar-copy flex flex-col">
+                      <span className="text-[11px] font-medium text-foreground/88">File tools</span>
+                      <span className="text-[10px] text-muted-foreground/70">
+                        Lets this agent read and edit files in its workspace.
+                      </span>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-label="File tools"
-                    aria-checked={permissionsDraftValue.fileTools}
-                    className={`ui-switch self-center ${permissionsDraftValue.fileTools ? "ui-switch--on" : ""}`}
-                    onClick={() =>
-                      setPermissionsDraftValue((current) => ({
-                        ...current,
-                        fileTools: !current.fileTools,
-                      }))
-                    }
-                  >
-                    <span className="ui-switch-thumb" />
-                  </button>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground/55" aria-hidden="true" />
                 </div>
                 <div className="ui-settings-row flex min-h-[68px] items-center justify-between gap-6 px-4 py-3">
-                  <div className="sidebar-copy flex flex-col">
-                    <span className="text-[11px] font-medium text-foreground/88">Skills</span>
-                    <span className="text-[10px] text-muted-foreground/70">Coming soon</span>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-label="Browser automation"
+                      aria-checked="false"
+                      className="ui-switch self-center"
+                      disabled
+                    >
+                      <span className="ui-switch-thumb" />
+                    </button>
+                    <div className="sidebar-copy flex flex-col">
+                      <span className="text-[11px] font-medium text-foreground/88">Browser automation</span>
+                      <span className="text-[10px] text-muted-foreground/70">Coming soon</span>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-label="Skills"
-                    aria-checked="false"
-                    className="ui-switch self-center"
-                    disabled
-                  >
-                    <span className="ui-switch-thumb" />
-                  </button>
-                </div>
-                <div className="ui-settings-row flex min-h-[68px] items-center justify-between gap-6 px-4 py-3">
-                  <div className="sidebar-copy flex flex-col">
-                    <span className="text-[11px] font-medium text-foreground/88">Browser automation</span>
-                    <span className="text-[10px] text-muted-foreground/70">Coming soon</span>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-label="Browser automation"
-                    aria-checked="false"
-                    className="ui-switch self-center"
-                    disabled
-                  >
-                    <span className="ui-switch-thumb" />
-                  </button>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground/55" aria-hidden="true" />
                 </div>
               </div>
               <div className="sidebar-copy mt-3 text-[11px] text-muted-foreground">
@@ -608,6 +675,39 @@ export const AgentSettingsPanel = ({
               ) : null}
             </section>
           </>
+        ) : null}
+
+        {mode === "skills" ? (
+          <AgentSkillsPanel
+            skillsReport={skillsReport}
+            skillsLoading={skillsLoading}
+            skillsError={skillsError}
+            skillsBusy={skillsBusy}
+            skillsBusyKey={skillsBusyKey}
+            skillsAllowlist={skillsAllowlist}
+            onSetSkillEnabled={onSetSkillEnabled}
+            onOpenSystemSetup={onOpenSystemSetup}
+          />
+        ) : null}
+
+        {mode === "system" ? (
+          <SystemSkillsPanel
+            skillsReport={skillsReport}
+            skillsLoading={skillsLoading}
+            skillsError={skillsError}
+            skillsBusy={skillsBusy}
+            skillsBusyKey={skillsBusyKey}
+            skillMessages={skillMessages}
+            skillApiKeyDrafts={skillApiKeyDrafts}
+            defaultAgentScopeWarning={defaultAgentScopeWarning}
+            initialSkillKey={systemInitialSkillKey}
+            onInitialSkillKeyHandled={onSystemInitialSkillHandled}
+            onSetSkillGlobalEnabled={onSetSkillGlobalEnabled}
+            onInstallSkill={onInstallSkill}
+            onRemoveSkill={onRemoveSkill}
+            onSkillApiKeyChange={onSkillApiKeyChange}
+            onSaveSkillApiKey={onSaveSkillApiKey}
+          />
         ) : null}
 
         {mode === "automations" ? (
@@ -766,45 +866,6 @@ export const AgentSettingsPanel = ({
 
         {mode === "advanced" ? (
           <>
-            <section
-              className="sidebar-section"
-              data-testid="agent-settings-display"
-            >
-              <h3 className="sidebar-section-title">Display</h3>
-          <div className="mt-3 grid gap-6 md:grid-cols-2">
-            <div className="ui-settings-row flex min-h-[68px] items-center justify-between gap-6 px-4 py-3">
-              <div className="sidebar-copy flex flex-col">
-                <span className="text-[11px] font-medium text-foreground/88">Show tool calls</span>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-label="Show tool calls"
-                aria-checked={agent.toolCallingEnabled}
-                className={`ui-switch shrink-0 self-center ${agent.toolCallingEnabled ? "ui-switch--on" : ""}`}
-                onClick={() => onToolCallingToggle(!agent.toolCallingEnabled)}
-              >
-                <span className="ui-switch-thumb" />
-              </button>
-            </div>
-            <div className="ui-settings-row flex min-h-[68px] items-center justify-between gap-6 px-4 py-3">
-              <div className="sidebar-copy flex flex-col">
-                <span className="text-[11px] font-medium text-foreground/88">Show thinking</span>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-label="Show thinking"
-                aria-checked={agent.showThinkingTraces}
-                className={`ui-switch shrink-0 self-center ${agent.showThinkingTraces ? "ui-switch--on" : ""}`}
-                onClick={() => onThinkingTracesToggle(!agent.showThinkingTraces)}
-              >
-                <span className="ui-switch-thumb" />
-              </button>
-            </div>
-          </div>
-            </section>
-
             <section className="sidebar-section mt-8" data-testid="agent-settings-control-ui">
               <h3 className="sidebar-section-title ui-text-danger">Danger Zone</h3>
               <div className="ui-alert-danger mt-3 rounded-md px-3 py-3 text-[11px]">
@@ -819,7 +880,7 @@ export const AgentSettingsPanel = ({
               </div>
               {canOpenControlUi ? (
                 <a
-                  className="sidebar-btn-primary ui-btn-danger mt-3 flex w-full items-center justify-center gap-1.5 px-3 py-2.5 text-center font-mono text-[10px] font-semibold tracking-[0.06em]"
+                  className="sidebar-btn-primary ui-btn-danger mt-3 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 text-center font-mono text-[10px] font-semibold tracking-[0.06em]"
                   href={controlUiUrl ?? undefined}
                   target="_blank"
                   rel="noreferrer"
@@ -830,7 +891,7 @@ export const AgentSettingsPanel = ({
               ) : (
                 <>
                   <button
-                    className="sidebar-btn-primary ui-btn-danger mt-3 w-full px-3 py-2.5 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:opacity-65"
+                    className="sidebar-btn-primary ui-btn-danger mt-3 inline-flex px-3 py-2.5 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:opacity-65"
                     type="button"
                     disabled
                   >
@@ -841,17 +902,15 @@ export const AgentSettingsPanel = ({
                   </div>
                 </>
               )}
-              <div className="mt-2 text-[10px] text-muted-foreground/75">Opens in a new tab.</div>
             </section>
 
             {canDelete ? (
               <section className="sidebar-section mt-8">
-                <h3 className="sidebar-section-title ui-text-danger">Delete agent</h3>
-                <div className="mt-3 text-[11px] text-muted-foreground/68">
+                <div className="text-[11px] text-muted-foreground/68">
                   Removes the agent from the gateway config and deletes its scheduled automations.
                 </div>
                 <button
-                  className="sidebar-btn-ghost ui-btn-danger mt-3 w-full px-3 py-2 font-mono text-[10px] font-semibold tracking-[0.06em]"
+                  className="sidebar-btn-ghost ui-btn-danger mt-3 inline-flex px-3 py-2 font-mono text-[10px] font-semibold tracking-[0.06em]"
                   type="button"
                   onClick={onDelete}
                 >
@@ -1132,23 +1191,15 @@ export const AgentSettingsPanel = ({
   );
 };
 
-type AgentBrainPanelProps = {
-  client: GatewayClient;
-  agents: AgentState[];
-  selectedAgentId: string | null;
-};
-
 type AgentFilesState = ReturnType<typeof createAgentFilesState>;
 
 type UseAgentFilesEditorResult = {
   agentFiles: AgentFilesState;
-  agentFileTab: PersonalityFileName;
   agentFilesLoading: boolean;
   agentFilesSaving: boolean;
   agentFilesDirty: boolean;
   agentFilesError: string | null;
-  setAgentFileContent: (value: string) => void;
-  handleAgentFileTabChange: (nextTab: PersonalityFileName) => Promise<void>;
+  setAgentFileContent: (name: AgentFileName, value: string) => void;
   saveAgentFiles: () => Promise<boolean>;
   discardAgentFileChanges: () => void;
 };
@@ -1159,7 +1210,6 @@ const useAgentFilesEditor = (params: {
 }): UseAgentFilesEditorResult => {
   const { client, agentId } = params;
   const [agentFiles, setAgentFiles] = useState(createAgentFilesState);
-  const [agentFileTab, setAgentFileTab] = useState<PersonalityFileName>(PERSONALITY_FILE_NAMES[0]);
   const [agentFilesLoading, setAgentFilesLoading] = useState(false);
   const [agentFilesSaving, setAgentFilesSaving] = useState(false);
   const [agentFilesDirty, setAgentFilesDirty] = useState(false);
@@ -1259,28 +1309,14 @@ const useAgentFilesEditor = (params: {
     }
   }, [agentFiles, agentId, client]);
 
-  const handleAgentFileTabChange = useCallback(
-    async (nextTab: PersonalityFileName) => {
-      if (nextTab === agentFileTab) return;
-      if (agentFilesDirty && !agentFilesSaving) {
-        const saved = await saveAgentFiles();
-        if (!saved) return;
-      }
-      setAgentFileTab(nextTab);
-    },
-    [agentFileTab, agentFilesDirty, agentFilesSaving, saveAgentFiles]
-  );
-
-  const setAgentFileContent = useCallback(
-    (value: string) => {
-      setAgentFiles((prev) => ({
-        ...prev,
-        [agentFileTab]: { ...prev[agentFileTab], content: value },
-      }));
-      setAgentFilesDirty(true);
-    },
-    [agentFileTab]
-  );
+  const setAgentFileContent = useCallback((name: AgentFileName, value: string) => {
+    if (!isAgentFileName(name)) return;
+    setAgentFiles((prev) => ({
+      ...prev,
+      [name]: { ...prev[name], content: value },
+    }));
+    setAgentFilesDirty(true);
+  }, []);
 
   const discardAgentFileChanges = useCallback(() => {
     setAgentFiles(cloneAgentFilesState(savedAgentFilesRef.current));
@@ -1292,30 +1328,43 @@ const useAgentFilesEditor = (params: {
     void loadAgentFiles();
   }, [loadAgentFiles]);
 
-  useEffect(() => {
-    if (!PERSONALITY_FILE_NAMES.includes(agentFileTab)) {
-      setAgentFileTab(PERSONALITY_FILE_NAMES[0]);
-    }
-  }, [agentFileTab]);
-
   return {
     agentFiles,
-    agentFileTab,
     agentFilesLoading,
     agentFilesSaving,
     agentFilesDirty,
     agentFilesError,
     setAgentFileContent,
-    handleAgentFileTabChange,
     saveAgentFiles,
     discardAgentFileChanges,
   };
 };
 
+type AgentBrainPanelProps = {
+  client: GatewayClient;
+  agents: AgentState[];
+  selectedAgentId: string | null;
+  onUnsavedChangesChange?: (dirty: boolean) => void;
+};
+
+const AgentBrainPanelSection = ({
+  title,
+  children,
+}: {
+  title: string;
+  children: ReactNode;
+}) => (
+  <section className="space-y-3 border-t border-border/55 pt-8 first:border-t-0 first:pt-0">
+    <h3 className="text-sm font-medium text-foreground">{title}</h3>
+    {children}
+  </section>
+);
+
 export const AgentBrainPanel = ({
   client,
   agents,
   selectedAgentId,
+  onUnsavedChangesChange,
 }: AgentBrainPanelProps) => {
   const selectedAgent = useMemo(
     () =>
@@ -1327,42 +1376,40 @@ export const AgentBrainPanel = ({
 
   const {
     agentFiles,
-    agentFileTab,
     agentFilesLoading,
     agentFilesSaving,
     agentFilesDirty,
     agentFilesError,
     setAgentFileContent,
-    handleAgentFileTabChange,
     saveAgentFiles,
     discardAgentFileChanges,
   } = useAgentFilesEditor({ client, agentId: selectedAgent?.agentId ?? null });
-  const [previewMode, setPreviewMode] = useState(true);
+  const draft = useMemo(() => parsePersonalityFiles(agentFiles), [agentFiles]);
 
-  const handleTabChange = useCallback(
-    async (nextTab: PersonalityFileName) => {
-      await handleAgentFileTabChange(nextTab);
+  const setIdentityField = useCallback(
+    (field: "name" | "creature" | "vibe" | "emoji" | "avatar", value: string) => {
+      const nextDraft = parsePersonalityFiles(agentFiles);
+      nextDraft.identity[field] = value;
+      const serialized = serializePersonalityFiles(nextDraft);
+      setAgentFileContent("IDENTITY.md", serialized["IDENTITY.md"]);
     },
-    [handleAgentFileTabChange]
+    [agentFiles, setAgentFileContent]
   );
 
-  const handleEnterEditMode = useCallback(() => {
-    if (agentFilesLoading || agentFilesSaving) return;
-    setPreviewMode(false);
-  }, [agentFilesLoading, agentFilesSaving]);
+  const handleSave = useCallback(async () => {
+    if (agentFilesLoading || agentFilesSaving || !agentFilesDirty) return;
+    await saveAgentFiles();
+  }, [agentFilesDirty, agentFilesLoading, agentFilesSaving, saveAgentFiles]);
 
-  const handleCancelEditMode = useCallback(() => {
-    if (agentFilesLoading || agentFilesSaving) return;
-    discardAgentFileChanges();
-    setPreviewMode(true);
-  }, [agentFilesLoading, agentFilesSaving, discardAgentFileChanges]);
+  useEffect(() => {
+    onUnsavedChangesChange?.(agentFilesDirty);
+  }, [agentFilesDirty, onUnsavedChangesChange]);
 
-  const handleSaveEditMode = useCallback(async () => {
-    if (agentFilesLoading || agentFilesSaving) return;
-    const saved = await saveAgentFiles();
-    if (!saved) return;
-    setPreviewMode(true);
-  }, [agentFilesLoading, agentFilesSaving, saveAgentFiles]);
+  useEffect(() => {
+    return () => {
+      onUnsavedChangesChange?.(false);
+    };
+  }, [onUnsavedChangesChange]);
 
   return (
     <div
@@ -1370,99 +1417,132 @@ export const AgentBrainPanel = ({
       data-testid="agent-personality-panel"
       style={{ position: "relative", left: "auto", top: "auto", width: "100%", height: "100%" }}
     >
-      <div className="flex min-h-0 flex-1 flex-col p-4 pt-0">
-        <section className="flex min-h-0 flex-1 flex-col" data-testid="agent-personality-files">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 py-6">
+        <section className="mx-auto flex w-full max-w-[920px] min-h-0 flex-col" data-testid="agent-personality-files">
           {agentFilesError ? (
-            <div className="ui-alert-danger mt-2 rounded-md px-3 py-2 text-xs">
+            <div className="ui-alert-danger mb-4 rounded-md px-3 py-2 text-xs">
               {agentFilesError}
             </div>
           ) : null}
 
-          <div className="ui-segment grid grid-cols-3 sm:grid-cols-4">
-            {PERSONALITY_FILE_NAMES.map((name) => {
-              const active = name === agentFileTab;
-              return (
-                <button
-                  key={name}
-                  type="button"
-                  className="ui-segment-item px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em]"
-                  data-active={active ? "true" : "false"}
-                  onClick={() => {
-                    void handleTabChange(name);
-                  }}
-                >
-                  {PERSONALITY_FILE_LABELS[name]}
-                </button>
-              );
-            })}
+          <div className="mb-6 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              className="ui-btn-secondary px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:opacity-50"
+              disabled={agentFilesLoading || agentFilesSaving || !agentFilesDirty}
+              onClick={discardAgentFileChanges}
+            >
+              Discard
+            </button>
+            <button
+              type="button"
+              className="ui-btn-primary px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
+              disabled={agentFilesLoading || agentFilesSaving || !agentFilesDirty}
+              onClick={() => {
+                void handleSave();
+              }}
+            >
+              Save
+            </button>
           </div>
 
-          <div className="mt-3 flex items-center justify-end gap-1">
-            {previewMode ? (
-              <button
-                type="button"
-                className="ui-btn-primary px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
-                disabled={agentFilesLoading || agentFilesSaving}
-                onClick={handleEnterEditMode}
-              >
-                Edit
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className="ui-btn-primary px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
-                  disabled={agentFilesLoading || agentFilesSaving || !agentFilesDirty}
-                  onClick={() => {
-                    void handleSaveEditMode();
-                  }}
-                >
-                  Save
-                </button>
-                <button
-                  type="button"
-                  className="ui-btn-secondary px-3 py-1 font-mono text-[10px] font-semibold tracking-[0.06em] disabled:opacity-50"
-                  disabled={agentFilesLoading || agentFilesSaving}
-                  onClick={handleCancelEditMode}
-                >
-                  Cancel
-                </button>
-              </>
-            )}
-          </div>
-
-          <div className="mt-3 min-h-0 flex-1 rounded-lg bg-muted/30 p-3">
-            {previewMode ? (
-              <div className="agent-markdown h-full overflow-y-auto rounded-lg bg-background/80 px-4 py-3 text-xs leading-7 text-foreground shadow-2xs">
-                {agentFiles[agentFileTab].content.trim().length === 0 ? (
-                  <p className="text-muted-foreground">
-                    {AGENT_FILE_PLACEHOLDERS[agentFileTab]}
-                  </p>
-                ) : (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {agentFiles[agentFileTab].content}
-                  </ReactMarkdown>
-                )}
-              </div>
-            ) : (
+          <div className="space-y-8 pb-8">
+            <AgentBrainPanelSection title="Persona">
               <textarea
-                className="h-full min-h-0 w-full resize-none overflow-y-auto rounded-lg border border-border/80 bg-background/80 px-4 py-3 font-mono text-xs leading-7 text-foreground outline-none"
-                value={agentFiles[agentFileTab].content}
-                placeholder={
-                  agentFiles[agentFileTab].content.trim().length === 0
-                    ? AGENT_FILE_PLACEHOLDERS[agentFileTab]
-                    : undefined
-                }
+                aria-label="Persona"
+                className="h-56 w-full resize-y rounded-md border border-border/80 bg-background px-4 py-3 font-mono text-sm leading-6 text-foreground outline-none"
+                value={agentFiles["SOUL.md"].content}
                 disabled={agentFilesLoading || agentFilesSaving}
                 onChange={(event) => {
-                  setAgentFileContent(event.target.value);
+                  setAgentFileContent("SOUL.md", event.target.value);
                 }}
               />
-            )}
-          </div>
+            </AgentBrainPanelSection>
 
-          <div className="mt-3 flex items-center justify-between gap-2 pt-2">
-            <div className="text-xs text-muted-foreground">All changes saved</div>
+            <AgentBrainPanelSection title="Directives">
+              <textarea
+                aria-label="Directives"
+                className="h-56 w-full resize-y rounded-md border border-border/80 bg-background px-4 py-3 font-mono text-sm leading-6 text-foreground outline-none"
+                value={agentFiles["AGENTS.md"].content}
+                disabled={agentFilesLoading || agentFilesSaving}
+                onChange={(event) => {
+                  setAgentFileContent("AGENTS.md", event.target.value);
+                }}
+              />
+            </AgentBrainPanelSection>
+
+            <AgentBrainPanelSection title="Context">
+              <textarea
+                aria-label="Context"
+                className="h-56 w-full resize-y rounded-md border border-border/80 bg-background px-4 py-3 font-mono text-sm leading-6 text-foreground outline-none"
+                value={agentFiles["USER.md"].content}
+                disabled={agentFilesLoading || agentFilesSaving}
+                onChange={(event) => {
+                  setAgentFileContent("USER.md", event.target.value);
+                }}
+              />
+            </AgentBrainPanelSection>
+
+            <section className="space-y-3 border-t border-border/55 pt-8">
+              <h3 className="text-sm font-medium text-foreground">Identity</h3>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-2 text-xs text-muted-foreground">
+                  Name
+                  <input
+                    className="h-10 rounded-md border border-border/80 bg-background px-3 text-sm text-foreground outline-none"
+                    value={draft.identity.name}
+                    disabled={agentFilesLoading || agentFilesSaving}
+                    onChange={(event) => {
+                      setIdentityField("name", event.target.value);
+                    }}
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-xs text-muted-foreground">
+                  Creature
+                  <input
+                    className="h-10 rounded-md border border-border/80 bg-background px-3 text-sm text-foreground outline-none"
+                    value={draft.identity.creature}
+                    disabled={agentFilesLoading || agentFilesSaving}
+                    onChange={(event) => {
+                      setIdentityField("creature", event.target.value);
+                    }}
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-xs text-muted-foreground">
+                  Vibe
+                  <input
+                    className="h-10 rounded-md border border-border/80 bg-background px-3 text-sm text-foreground outline-none"
+                    value={draft.identity.vibe}
+                    disabled={agentFilesLoading || agentFilesSaving}
+                    onChange={(event) => {
+                      setIdentityField("vibe", event.target.value);
+                    }}
+                  />
+                </label>
+                <label className="flex flex-col gap-2 text-xs text-muted-foreground">
+                  Emoji
+                  <input
+                    className="h-10 rounded-md border border-border/80 bg-background px-3 text-sm text-foreground outline-none"
+                    value={draft.identity.emoji}
+                    disabled={agentFilesLoading || agentFilesSaving}
+                    onChange={(event) => {
+                      setIdentityField("emoji", event.target.value);
+                    }}
+                  />
+                </label>
+              </div>
+              <label className="flex flex-col gap-2 text-xs text-muted-foreground">
+                Avatar
+                <input
+                  className="h-10 rounded-md border border-border/80 bg-background px-3 text-sm text-foreground outline-none"
+                  value={draft.identity.avatar}
+                  disabled={agentFilesLoading || agentFilesSaving}
+                  onChange={(event) => {
+                    setIdentityField("avatar", event.target.value);
+                  }}
+                />
+              </label>
+            </section>
           </div>
         </section>
       </div>

@@ -49,9 +49,9 @@ export const ThemeToggle = () => {
       type="button"
       onClick={toggleTheme}
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-      className="ui-btn-icon"
+      className="ui-btn-icon ui-btn-icon-xs"
     >
-      {isDark ? <Sun className="h-[15px] w-[15px]" /> : <Moon className="h-[15px] w-[15px]" />}
+      {isDark ? <Sun className="h-3 w-3" /> : <Moon className="h-3 w-3" />}
     </button>
   );
 };

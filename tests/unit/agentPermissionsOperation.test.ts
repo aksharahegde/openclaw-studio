@@ -4,6 +4,7 @@ import {
   isPermissionsCustom,
   resolveAgentPermissionsDraft,
   resolveCommandModeFromRole,
+  resolvePresetDefaultsForRole,
   resolveRoleForCommandMode,
   resolveToolGroupOverrides,
   resolveToolGroupStateFromConfigEntry,
@@ -18,6 +19,14 @@ describe("agentPermissionsOperation", () => {
     expect(resolveCommandModeFromRole("conservative")).toBe("off");
     expect(resolveCommandModeFromRole("collaborative")).toBe("ask");
     expect(resolveCommandModeFromRole("autonomous")).toBe("auto");
+  });
+
+  it("resolves autonomous preset defaults to permissive capabilities", () => {
+    expect(resolvePresetDefaultsForRole("autonomous")).toEqual({
+      commandMode: "auto",
+      webAccess: true,
+      fileTools: true,
+    });
   });
 
   it("derives tool-group state from allow and deny with deny precedence", () => {

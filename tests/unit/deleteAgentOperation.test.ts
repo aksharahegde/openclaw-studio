@@ -1,12 +1,20 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-import { removeCronJobsForAgent } from "@/lib/cron/types";
+import {
+  removeCronJobsForAgentWithBackup,
+  restoreCronJobs,
+  type CronJobRestoreInput,
+} from "@/lib/cron/types";
 import { deleteGatewayAgent } from "@/lib/gateway/agentConfig";
 import { deleteAgentViaStudio } from "@/features/agents/operations/deleteAgentOperation";
 
 vi.mock("@/lib/cron/types", async () => {
   const actual = await vi.importActual<typeof import("@/lib/cron/types")>("@/lib/cron/types");
-  return { ...actual, removeCronJobsForAgent: vi.fn() };
+  return {
+    ...actual,
+    removeCronJobsForAgentWithBackup: vi.fn(),
+    restoreCronJobs: vi.fn(),
+  };
 });
 
 vi.mock("@/lib/gateway/agentConfig", async () => {
@@ -27,12 +35,24 @@ const createTrashResult = (overrides?: {
   ...(overrides ?? {}),
 });
 
+const createCronRestoreInput = (name = "Job 1", agentId = "agent-1"): CronJobRestoreInput => ({
+  name,
+  agentId,
+  enabled: true,
+  schedule: { kind: "every", everyMs: 60_000 },
+  sessionTarget: "isolated",
+  wakeMode: "now",
+  payload: { kind: "agentTurn", message: "Run checks." },
+});
+
 describe("delete agent via studio operation", () => {
-  const mockedRemoveCronJobsForAgent = vi.mocked(removeCronJobsForAgent);
+  const mockedRemoveCronJobsForAgentWithBackup = vi.mocked(removeCronJobsForAgentWithBackup);
+  const mockedRestoreCronJobs = vi.mocked(restoreCronJobs);
   const mockedDeleteGatewayAgent = vi.mocked(deleteGatewayAgent);
 
   beforeEach(() => {
-    mockedRemoveCronJobsForAgent.mockReset();
+    mockedRemoveCronJobsForAgentWithBackup.mockReset();
+    mockedRestoreCronJobs.mockReset();
     mockedDeleteGatewayAgent.mockReset();
   });
 
@@ -46,9 +66,12 @@ describe("delete agent via studio operation", () => {
       throw new Error("Unexpected fetchJson call");
     });
 
-    mockedRemoveCronJobsForAgent.mockImplementation(async () => {
+    mockedRemoveCronJobsForAgentWithBackup.mockImplementation(async () => {
       calls.push("removeCron");
-      return 0;
+      return [];
+    });
+    mockedRestoreCronJobs.mockImplementation(async () => {
+      calls.push("restoreCron");
     });
     mockedDeleteGatewayAgent.mockImplementation(async () => {
       calls.push("deleteGatewayAgent");
@@ -85,9 +108,12 @@ describe("delete agent via studio operation", () => {
       throw new Error("Unexpected fetchJson call");
     });
 
-    mockedRemoveCronJobsForAgent.mockImplementation(async () => {
+    mockedRemoveCronJobsForAgentWithBackup.mockImplementation(async () => {
       calls.push("removeCron");
       throw originalErr;
+    });
+    mockedRestoreCronJobs.mockImplementation(async () => {
+      calls.push("restoreCron");
     });
     mockedDeleteGatewayAgent.mockImplementation(async () => {
       calls.push("deleteGatewayAgent");
@@ -99,12 +125,14 @@ describe("delete agent via studio operation", () => {
     ).rejects.toBe(originalErr);
 
     expect(calls).toEqual(["trash", "removeCron", "restore:agent-1:/tmp/trash-2"]);
+    expect(mockedRestoreCronJobs).not.toHaveBeenCalled();
     expect(mockedDeleteGatewayAgent).not.toHaveBeenCalled();
   });
 
-  it("attempts_restore_when_gateway_delete_fails_and_trash_moved_paths", async () => {
+  it("attempts_cron_restore_then_state_restore_when_gateway_delete_fails_and_trash_moved_paths", async () => {
     const calls: string[] = [];
     const originalErr = new Error("boom");
+    const backups = [createCronRestoreInput("Job X", "agent-1")];
 
     const fetchJson: FetchJson = vi.fn(async (_input, init) => {
       if (init?.method === "POST") {
@@ -123,9 +151,12 @@ describe("delete agent via studio operation", () => {
       throw new Error("Unexpected fetchJson call");
     });
 
-    mockedRemoveCronJobsForAgent.mockImplementation(async () => {
+    mockedRemoveCronJobsForAgentWithBackup.mockImplementation(async () => {
       calls.push("removeCron");
-      return 0;
+      return backups;
+    });
+    mockedRestoreCronJobs.mockImplementation(async () => {
+      calls.push("restoreCron");
     });
     mockedDeleteGatewayAgent.mockImplementation(async () => {
       calls.push("deleteGatewayAgent");
@@ -140,8 +171,10 @@ describe("delete agent via studio operation", () => {
       "trash",
       "removeCron",
       "deleteGatewayAgent",
+      "restoreCron",
       "restore:agent-1:/tmp/trash-3",
     ]);
+    expect(mockedRestoreCronJobs).toHaveBeenCalledWith(expect.anything(), backups);
   });
 
   it("does_not_restore_when_trash_moved_is_empty", async () => {
@@ -160,9 +193,10 @@ describe("delete agent via studio operation", () => {
       throw new Error("Unexpected fetchJson call");
     });
 
-    mockedRemoveCronJobsForAgent.mockImplementation(async () => {
+    mockedRemoveCronJobsForAgentWithBackup.mockImplementation(async () => {
       throw originalErr;
     });
+    mockedRestoreCronJobs.mockResolvedValue(undefined);
     mockedDeleteGatewayAgent.mockImplementation(async () => {
       return { removed: true, removedBindings: 0 };
     });
@@ -173,12 +207,15 @@ describe("delete agent via studio operation", () => {
 
     expect(methods).toEqual(["POST"]);
     expect(mockedDeleteGatewayAgent).not.toHaveBeenCalled();
+    expect(mockedRestoreCronJobs).not.toHaveBeenCalled();
   });
 
-  it("logs_restore_failure_and_still_throws_original_error", async () => {
+  it("logs_cron_and_state_restore_failures_and_still_throws_original_error", async () => {
     const originalErr = new Error("boom");
+    const cronRestoreErr = new Error("cron-restore-failed");
     const restoreErr = new Error("restore-failed");
     const logError = vi.fn();
+    const backups = [createCronRestoreInput("Job Z", "agent-1")];
 
     const fetchJson: FetchJson = vi.fn(async (_input, init) => {
       if (init?.method === "POST") {
@@ -195,8 +232,11 @@ describe("delete agent via studio operation", () => {
       throw new Error("Unexpected fetchJson call");
     });
 
-    mockedRemoveCronJobsForAgent.mockImplementation(async () => {
-      return 0;
+    mockedRemoveCronJobsForAgentWithBackup.mockImplementation(async () => {
+      return backups;
+    });
+    mockedRestoreCronJobs.mockImplementation(async () => {
+      throw cronRestoreErr;
     });
     mockedDeleteGatewayAgent.mockImplementation(async () => {
       throw originalErr;
@@ -211,8 +251,13 @@ describe("delete agent via studio operation", () => {
       })
     ).rejects.toBe(originalErr);
 
-    expect(logError).toHaveBeenCalledTimes(1);
-    expect(logError).toHaveBeenCalledWith("Failed to restore trashed agent state.", restoreErr);
+    expect(logError).toHaveBeenCalledTimes(2);
+    expect(logError).toHaveBeenNthCalledWith(
+      1,
+      "Failed to restore removed cron jobs.",
+      cronRestoreErr
+    );
+    expect(logError).toHaveBeenNthCalledWith(2, "Failed to restore trashed agent state.", restoreErr);
   });
 
   it("fails_fast_when_agent_id_is_missing", async () => {
@@ -225,7 +270,8 @@ describe("delete agent via studio operation", () => {
     ).rejects.toThrow("Agent id is required.");
 
     expect(fetchJson).not.toHaveBeenCalled();
-    expect(mockedRemoveCronJobsForAgent).not.toHaveBeenCalled();
+    expect(mockedRemoveCronJobsForAgentWithBackup).not.toHaveBeenCalled();
+    expect(mockedRestoreCronJobs).not.toHaveBeenCalled();
     expect(mockedDeleteGatewayAgent).not.toHaveBeenCalled();
   });
 });

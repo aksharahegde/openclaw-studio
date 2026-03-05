@@ -78,6 +78,8 @@ export type GatewayAgentOverrides = {
   tools?: GatewayAgentToolsOverrides;
 };
 
+const DEFAULT_AGENT_ID = "main";
+
 export const readConfigAgentList = (
   config: Record<string, unknown> | undefined
 ): ConfigAgentEntry[] => {
@@ -89,6 +91,19 @@ export const readConfigAgentList = (
     if (typeof entry.id !== "string") return false;
     return entry.id.trim().length > 0;
   });
+};
+
+export const resolveDefaultConfigAgentId = (
+  config: Record<string, unknown> | undefined
+): string => {
+  const list = readConfigAgentList(config);
+  if (list.length === 0) {
+    return DEFAULT_AGENT_ID;
+  }
+  const defaults = list.filter((entry) => entry.default === true);
+  const selected = defaults[0] ?? list[0];
+  const resolved = selected.id.trim();
+  return resolved || DEFAULT_AGENT_ID;
 };
 
 export const writeConfigAgentList = (
@@ -331,39 +346,6 @@ const applyGatewayConfigPatch = async (params: {
   }
 };
 
-const applyGatewayConfigSet = async (params: {
-  client: GatewayClient;
-  config: Record<string, unknown>;
-  baseHash?: string | null;
-  exists?: boolean;
-  attempt?: number;
-}): Promise<void> => {
-  const attempt = params.attempt ?? 0;
-  const requiresBaseHash = params.exists !== false;
-  const baseHash = requiresBaseHash ? params.baseHash?.trim() : undefined;
-  if (requiresBaseHash && !baseHash) {
-    throw new Error("Gateway config hash unavailable; re-run config.get.");
-  }
-  const payload: Record<string, unknown> = {
-    raw: JSON.stringify(params.config, null, 2),
-  };
-  if (baseHash) payload.baseHash = baseHash;
-  try {
-    await params.client.call("config.set", payload);
-  } catch (err) {
-    if (attempt < 1 && shouldRetryConfigWrite(err)) {
-      const snapshot = await params.client.call<GatewayConfigSnapshot>("config.get", {});
-      return applyGatewayConfigSet({
-        ...params,
-        baseHash: snapshot.hash ?? undefined,
-        exists: snapshot.exists,
-        attempt: attempt + 1,
-      });
-    }
-    throw err;
-  }
-};
-
 export const renameGatewayAgent = async (params: {
   client: GatewayClient;
   agentId: string;
@@ -503,6 +485,162 @@ export const removeGatewayHeartbeatOverride = async (params: {
   return resolveHeartbeatSettings(nextConfig, params.agentId);
 };
 
+export type AgentSkillsAccessMode = "all" | "none" | "allowlist";
+
+const resolveRequiredAgentId = (agentId: string): string => {
+  const trimmed = agentId.trim();
+  if (!trimmed) {
+    throw new Error("Agent id is required.");
+  }
+  return trimmed;
+};
+
+const normalizeSkillAllowlistInput = (values: ReadonlyArray<unknown>): string[] => {
+  const next = values
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  return Array.from(new Set(next)).sort((a, b) => a.localeCompare(b));
+};
+
+const normalizeSkillAllowlist = (values: string[]): string[] => {
+  return normalizeSkillAllowlistInput(values);
+};
+
+const areStringArraysEqual = (a: readonly string[], b: readonly string[]): boolean => {
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+};
+
+const buildAgentSkillsConfig = (params: {
+  baseConfig: Record<string, unknown>;
+  agentId: string;
+  mode: AgentSkillsAccessMode;
+  skillNames?: string[];
+}): Record<string, unknown> => {
+  const list = readConfigAgentList(params.baseConfig);
+  const currentEntry = list.find((entry) => entry.id === params.agentId);
+  const hasEntry = Boolean(currentEntry);
+  const currentRawSkills = currentEntry?.skills;
+
+  if (params.mode === "all") {
+    if (!hasEntry) {
+      return params.baseConfig;
+    }
+    if (!Object.prototype.hasOwnProperty.call(currentEntry, "skills")) {
+      return params.baseConfig;
+    }
+  }
+
+  if (params.mode === "none" && Array.isArray(currentRawSkills) && currentRawSkills.length === 0) {
+    return params.baseConfig;
+  }
+
+  if (params.mode === "allowlist") {
+    const rawSkills = params.skillNames;
+    if (!rawSkills) {
+      throw new Error("Skills allowlist is required when mode is allowlist.");
+    }
+    const normalizedNext = normalizeSkillAllowlist(rawSkills);
+    if (Array.isArray(currentRawSkills)) {
+      const normalizedCurrent = normalizeSkillAllowlistInput(currentRawSkills);
+      if (areStringArraysEqual(normalizedCurrent, normalizedNext)) {
+        return params.baseConfig;
+      }
+    }
+  }
+
+  const { list: nextList } = upsertConfigAgentEntry(list, params.agentId, (entry) => {
+    const next: ConfigAgentEntry = { ...entry, id: params.agentId };
+    if (params.mode === "all") {
+      if ("skills" in next) {
+        delete next.skills;
+      }
+      return next;
+    }
+    if (params.mode === "none") {
+      next.skills = [];
+      return next;
+    }
+    const rawSkills = params.skillNames;
+    if (!rawSkills) {
+      throw new Error("Skills allowlist is required when mode is allowlist.");
+    }
+    next.skills = normalizeSkillAllowlist(rawSkills);
+    return next;
+  });
+  return writeConfigAgentList(params.baseConfig, nextList);
+};
+
+export const readGatewayAgentSkillsAllowlist = async (params: {
+  client: GatewayClient;
+  agentId: string;
+}): Promise<string[] | undefined> => {
+  const agentId = resolveRequiredAgentId(params.agentId);
+  const snapshot = await params.client.call<GatewayConfigSnapshot>("config.get", {});
+  const baseConfig = isRecord(snapshot.config) ? snapshot.config : {};
+  const list = readConfigAgentList(baseConfig);
+  const entry = list.find((item) => item.id === agentId);
+  if (!entry) {
+    return undefined;
+  }
+  const raw = entry.skills;
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  return normalizeSkillAllowlistInput(raw);
+};
+
+export const updateGatewayAgentSkillsAllowlist = async (params: {
+  client: GatewayClient;
+  agentId: string;
+  mode: AgentSkillsAccessMode;
+  skillNames?: string[];
+}): Promise<void> => {
+  const agentId = resolveRequiredAgentId(params.agentId);
+  if (params.mode === "allowlist" && !params.skillNames) {
+    throw new Error("Skills allowlist is required when mode is allowlist.");
+  }
+
+  const attemptWrite = async (attempt: number): Promise<void> => {
+    const snapshot = await params.client.call<GatewayConfigSnapshot>("config.get", {});
+    const baseConfig = isRecord(snapshot.config) ? snapshot.config : {};
+    const nextConfig = buildAgentSkillsConfig({
+      baseConfig,
+      agentId,
+      mode: params.mode,
+      skillNames: params.skillNames,
+    });
+    if (nextConfig === baseConfig) {
+      return;
+    }
+    const payload: Record<string, unknown> = {
+      raw: JSON.stringify(nextConfig, null, 2),
+    };
+    const requiresBaseHash = snapshot.exists !== false;
+    const baseHash = requiresBaseHash ? snapshot.hash?.trim() : undefined;
+    if (requiresBaseHash && !baseHash) {
+      throw new Error("Gateway config hash unavailable; re-run config.get.");
+    }
+    if (baseHash) {
+      payload.baseHash = baseHash;
+    }
+    try {
+      await params.client.call("config.set", payload);
+    } catch (err) {
+      if (attempt < 1 && shouldRetryConfigWrite(err)) {
+        return attemptWrite(attempt + 1);
+      }
+      throw err;
+    }
+  };
+
+  await attemptWrite(0);
+};
+
 const normalizeToolList = (values: string[] | undefined): string[] | undefined => {
   if (!values) return undefined;
   const next = values
@@ -536,70 +674,88 @@ export const updateGatewayAgentOverrides = async (params: {
     return;
   }
 
-  const snapshot = await params.client.call<GatewayConfigSnapshot>("config.get", {});
-  const baseConfig = isRecord(snapshot.config) ? snapshot.config : {};
-  const list = readConfigAgentList(baseConfig);
-  const { list: nextList } = upsertConfigAgentEntry(list, agentId, (entry) => {
-    const next: ConfigAgentEntry = { ...entry, id: agentId };
+  const buildNextConfig = (baseConfig: Record<string, unknown>): Record<string, unknown> => {
+    const list = readConfigAgentList(baseConfig);
+    const { list: nextList } = upsertConfigAgentEntry(list, agentId, (entry) => {
+      const next: ConfigAgentEntry = { ...entry, id: agentId };
 
-    if (hasSandboxOverrides) {
-      const currentSandbox = isRecord(next.sandbox) ? { ...next.sandbox } : {};
-      if (params.overrides.sandbox?.mode) {
-        currentSandbox.mode = params.overrides.sandbox.mode;
-      }
-      if (params.overrides.sandbox?.workspaceAccess) {
-        currentSandbox.workspaceAccess = params.overrides.sandbox.workspaceAccess;
-      }
-      next.sandbox = currentSandbox;
-    }
-
-    if (hasToolsOverrides) {
-      const currentTools = isRecord(next.tools) ? { ...next.tools } : {};
-      if (params.overrides.tools?.profile) {
-        currentTools.profile = params.overrides.tools.profile;
-      }
-      const allow = normalizeToolList(params.overrides.tools?.allow);
-      if (allow !== undefined) {
-        currentTools.allow = allow;
-        delete currentTools.alsoAllow;
-      }
-      const alsoAllow = normalizeToolList(params.overrides.tools?.alsoAllow);
-      if (alsoAllow !== undefined) {
-        currentTools.alsoAllow = alsoAllow;
-        delete currentTools.allow;
-      }
-      const deny = normalizeToolList(params.overrides.tools?.deny);
-      if (deny !== undefined) {
-        currentTools.deny = deny;
-      }
-
-      const sandboxAllow = normalizeToolList(params.overrides.tools?.sandbox?.tools?.allow);
-      const sandboxDeny = normalizeToolList(params.overrides.tools?.sandbox?.tools?.deny);
-      if (sandboxAllow !== undefined || sandboxDeny !== undefined) {
-        const sandboxRaw = (currentTools as Record<string, unknown>).sandbox;
-        const sandbox = isRecord(sandboxRaw) ? { ...sandboxRaw } : {};
-        const sandboxToolsRaw = (sandbox as Record<string, unknown>).tools;
-        const sandboxTools = isRecord(sandboxToolsRaw) ? { ...sandboxToolsRaw } : {};
-        if (sandboxAllow !== undefined) {
-          (sandboxTools as Record<string, unknown>).allow = sandboxAllow;
+      if (hasSandboxOverrides) {
+        const currentSandbox = isRecord(next.sandbox) ? { ...next.sandbox } : {};
+        if (params.overrides.sandbox?.mode) {
+          currentSandbox.mode = params.overrides.sandbox.mode;
         }
-        if (sandboxDeny !== undefined) {
-          (sandboxTools as Record<string, unknown>).deny = sandboxDeny;
+        if (params.overrides.sandbox?.workspaceAccess) {
+          currentSandbox.workspaceAccess = params.overrides.sandbox.workspaceAccess;
         }
-        (sandbox as Record<string, unknown>).tools = sandboxTools;
-        (currentTools as Record<string, unknown>).sandbox = sandbox;
+        next.sandbox = currentSandbox;
       }
-      next.tools = currentTools;
+
+      if (hasToolsOverrides) {
+        const currentTools = isRecord(next.tools) ? { ...next.tools } : {};
+        if (params.overrides.tools?.profile) {
+          currentTools.profile = params.overrides.tools.profile;
+        }
+        const allow = normalizeToolList(params.overrides.tools?.allow);
+        if (allow !== undefined) {
+          currentTools.allow = allow;
+          delete currentTools.alsoAllow;
+        }
+        const alsoAllow = normalizeToolList(params.overrides.tools?.alsoAllow);
+        if (alsoAllow !== undefined) {
+          currentTools.alsoAllow = alsoAllow;
+          delete currentTools.allow;
+        }
+        const deny = normalizeToolList(params.overrides.tools?.deny);
+        if (deny !== undefined) {
+          currentTools.deny = deny;
+        }
+
+        const sandboxAllow = normalizeToolList(params.overrides.tools?.sandbox?.tools?.allow);
+        const sandboxDeny = normalizeToolList(params.overrides.tools?.sandbox?.tools?.deny);
+        if (sandboxAllow !== undefined || sandboxDeny !== undefined) {
+          const sandboxRaw = (currentTools as Record<string, unknown>).sandbox;
+          const sandbox = isRecord(sandboxRaw) ? { ...sandboxRaw } : {};
+          const sandboxToolsRaw = (sandbox as Record<string, unknown>).tools;
+          const sandboxTools = isRecord(sandboxToolsRaw) ? { ...sandboxToolsRaw } : {};
+          if (sandboxAllow !== undefined) {
+            (sandboxTools as Record<string, unknown>).allow = sandboxAllow;
+          }
+          if (sandboxDeny !== undefined) {
+            (sandboxTools as Record<string, unknown>).deny = sandboxDeny;
+          }
+          (sandbox as Record<string, unknown>).tools = sandboxTools;
+          (currentTools as Record<string, unknown>).sandbox = sandbox;
+        }
+        next.tools = currentTools;
+      }
+
+      return next;
+    });
+    return writeConfigAgentList(baseConfig, nextList);
+  };
+
+  const attemptWrite = async (attempt: number): Promise<void> => {
+    const snapshot = await params.client.call<GatewayConfigSnapshot>("config.get", {});
+    const baseConfig = isRecord(snapshot.config) ? snapshot.config : {};
+    const nextConfig = buildNextConfig(baseConfig);
+    const payload: Record<string, unknown> = {
+      raw: JSON.stringify(nextConfig, null, 2),
+    };
+    const requiresBaseHash = snapshot.exists !== false;
+    const baseHash = requiresBaseHash ? snapshot.hash?.trim() : undefined;
+    if (requiresBaseHash && !baseHash) {
+      throw new Error("Gateway config hash unavailable; re-run config.get.");
     }
+    if (baseHash) payload.baseHash = baseHash;
+    try {
+      await params.client.call("config.set", payload);
+    } catch (err) {
+      if (attempt < 1 && shouldRetryConfigWrite(err)) {
+        return attemptWrite(attempt + 1);
+      }
+      throw err;
+    }
+  };
 
-    return next;
-  });
-
-  const nextConfig = writeConfigAgentList(baseConfig, nextList);
-  await applyGatewayConfigSet({
-    client: params.client,
-    config: nextConfig,
-    baseHash: snapshot.hash ?? undefined,
-    exists: snapshot.exists,
-  });
+  await attemptWrite(0);
 };

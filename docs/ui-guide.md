@@ -50,8 +50,8 @@ This doc describes the current Studio IA and behavior.
 
 ## Agent Creation Defaults
 - Create modal captures only name/avatar.
-- After creation, Studio applies safe defaults:
-  - Commands: Ask
-  - Web access: Off
-  - File tools: Off
+- After creation, Studio applies permissive defaults:
+  - Commands: Auto
+  - Web access: On
+  - File tools: On
 - Post-create UX keeps chat as primary and auto-opens Capabilities sidebar for onboarding.

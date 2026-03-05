@@ -860,16 +860,26 @@ textarea:focus::-webkit-scrollbar {
 }
 
 .ui-topbar {
-  border-radius: var(--radius-container);
-  background: var(--panel);
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 72%, transparent);
+  border-radius: 0;
+  background: color-mix(in oklch, var(--surface-1) 96%, var(--surface-0));
+  box-shadow: none;
 }
 
 .dark .ui-topbar {
-  border-color: var(--plane-workspace-border);
-  background: color-mix(in oklch, var(--plane-workspace-bg) 94%, var(--surface-2));
-  box-shadow:
-    inset 0 1px 0 var(--elev-overlay-1),
-    var(--shadow-2xs);
+  border-bottom-color: color-mix(in oklch, var(--border) 88%, var(--surface-selected-border));
+  background: color-mix(in oklch, var(--surface-1) 94%, var(--surface-0));
+}
+
+.ui-topbar .ui-btn-icon {
+  --ui-btn-icon-size: 1.55rem;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ui-topbar .ui-btn-icon:hover {
+  background: color-mix(in oklch, var(--surface-2) 72%, transparent);
+  box-shadow: none;
 }
 
 .ui-btn-icon:hover {
@@ -922,6 +932,25 @@ textarea:focus::-webkit-scrollbar {
   box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--primary) 24%, transparent);
 }
 
+.ui-segment-fleet-filter {
+  padding-left: 0;
+  padding-right: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.ui-segment-fleet-filter .ui-segment-item {
+  border: 0;
+  box-shadow: none;
+}
+
+.ui-segment-fleet-filter .ui-segment-item[data-active="true"],
+.ui-segment-fleet-filter .ui-segment-item[aria-pressed="true"] {
+  border: 0;
+  box-shadow: none;
+}
+
 .ui-segment-command-mode .ui-segment-item {
   min-height: 2.125rem;
   border-color: color-mix(in oklch, var(--border) 68%, transparent);
@@ -960,6 +989,17 @@ textarea:focus::-webkit-scrollbar {
 .dark .ui-chat-scroll {
   border-color: color-mix(in oklch, var(--plane-workspace-border) 90%, var(--border));
   background: color-mix(in oklch, var(--surface-1) 95%, var(--surface-0));
+}
+
+.ui-chat-scroll-borderless {
+  border: 0 !important;
+  border-radius: 0;
+  background: transparent;
+}
+
+.dark .ui-chat-scroll-borderless {
+  border: 0 !important;
+  background: transparent;
 }
 
 .ui-chat-user-card {
@@ -1118,6 +1158,10 @@ textarea:focus::-webkit-scrollbar {
   color: var(--danger-soft-fg);
 }
 
+.ui-text-success {
+  color: var(--status-running-fg);
+}
+
 .ui-badge-status-idle {
   border: 1px solid var(--status-idle-border);
   background: var(--status-idle-bg);
@@ -1262,6 +1306,13 @@ textarea:focus::-webkit-scrollbar {
   outline: none !important;
   outline-offset: 0;
   box-shadow: 0 0 0 2px color-mix(in oklch, var(--ring) 20%, transparent) !important;
+}
+
+.chat-composer-input:focus,
+.chat-composer-input:focus-visible {
+  outline: none !important;
+  outline-offset: 0 !important;
+  box-shadow: none !important;
 }
 
 @keyframes fadeUp {

@@ -129,6 +129,7 @@ export type HistoryLinesResult = {
   lastAssistantAt: number | null;
   lastRole: string | null;
   lastUser: string | null;
+  lastUserAt: number | null;
 };
 
 export type HistorySyncPatchInput = {
@@ -221,6 +222,20 @@ export const buildHistoryLines = (messages: ChatHistoryMessage[]): HistoryLinesR
   let lastAssistantAt: number | null = null;
   let lastRole: string | null = null;
   let lastUser: string | null = null;
+  let lastUserAt: number | null = null;
+  const resolveAssistantTerminalLine = (message: ChatHistoryMessage): string | null => {
+    const stopReason =
+      typeof message.stopReason === "string" ? message.stopReason.trim().toLowerCase() : "";
+    if (stopReason === "aborted") return "Run aborted.";
+    if (stopReason === "error") {
+      const errorMessage =
+        typeof message.errorMessage === "string" ? message.errorMessage.trim() : "";
+      return errorMessage ? `Error: ${errorMessage}` : "Run error.";
+    }
+    const fallbackError =
+      typeof message.errorMessage === "string" ? message.errorMessage.trim() : "";
+    return fallbackError ? `Error: ${fallbackError}` : null;
+  };
   const isRestartSentinelMessage = (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return false;
@@ -234,7 +249,6 @@ export const buildHistoryLines = (messages: ChatHistoryMessage[]): HistoryLinesR
     const thinking =
       role === "assistant" ? formatThinkingMarkdown(extractThinking(message) ?? "") : "";
     const toolLines = extractToolLines(message);
-    if (!text && !thinking && toolLines.length === 0) continue;
     if (role === "system") {
       if (toolLines.length > 0) {
         lines.push(...toolLines);
@@ -251,9 +265,17 @@ export const buildHistoryLines = (messages: ChatHistoryMessage[]): HistoryLinesR
         }
         lines.push(`> ${text}`);
         lastUser = text;
+        if (typeof at === "number") {
+          lastUserAt = at;
+        }
       }
       lastRole = "user";
     } else if (role === "assistant") {
+      const terminalLine =
+        !text && !thinking && toolLines.length === 0 ? resolveAssistantTerminalLine(message) : null;
+      if (!text && !thinking && toolLines.length === 0 && !terminalLine) {
+        continue;
+      }
       const at = extractMessageTimestamp(message);
       if (typeof at === "number") {
         lastAssistantAt = at;
@@ -271,6 +293,10 @@ export const buildHistoryLines = (messages: ChatHistoryMessage[]): HistoryLinesR
         lines.push(text);
         lastAssistant = text;
       }
+      if (terminalLine) {
+        lines.push(terminalLine);
+        lastAssistant = terminalLine;
+      }
       lastRole = "assistant";
     } else if (toolLines.length > 0) {
       lines.push(...toolLines);
@@ -278,7 +304,54 @@ export const buildHistoryLines = (messages: ChatHistoryMessage[]): HistoryLinesR
       lines.push(text);
     }
   }
-  return { lines, lastAssistant, lastAssistantAt, lastRole, lastUser };
+  return { lines, lastAssistant, lastAssistantAt, lastRole, lastUser, lastUserAt };
+};
+
+const HISTORY_RUNNING_RECOVERY_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+export const resolveHistoryRunStatePatch = (params: {
+  status: AgentState["status"];
+  runId: string | null;
+  lastRole: string | null;
+  lastUserAt: number | null;
+  loadedAt: number;
+}): Partial<AgentState> | null => {
+  const activeRunId = params.runId?.trim() ?? "";
+  if (activeRunId) return null;
+
+  if (params.status === "running" && params.lastRole === "assistant") {
+    return {
+      status: "idle",
+      runId: null,
+      runStartedAt: null,
+      streamText: null,
+      thinkingTrace: null,
+    };
+  }
+
+  if (params.status === "running" || params.lastRole !== "user") {
+    return null;
+  }
+
+  const lastUserAt = params.lastUserAt;
+  if (typeof lastUserAt !== "number" || !Number.isFinite(lastUserAt)) {
+    return null;
+  }
+  if (params.loadedAt < lastUserAt) {
+    return null;
+  }
+  const ageMs = params.loadedAt - lastUserAt;
+  if (ageMs > HISTORY_RUNNING_RECOVERY_WINDOW_MS) {
+    return null;
+  }
+
+  return {
+    status: "running",
+    runId: null,
+    runStartedAt: lastUserAt,
+    streamText: null,
+    thinkingTrace: null,
+  };
 };
 
 export const mergeHistoryWithPending = (
@@ -373,23 +446,27 @@ export const buildHistorySyncPatch = ({
   status,
   runId,
 }: HistorySyncPatchInput): Partial<AgentState> => {
-  const { lines, lastAssistant, lastAssistantAt, lastRole, lastUser } = buildHistoryLines(messages);
+  const { lines, lastAssistant, lastAssistantAt, lastRole, lastUser, lastUserAt } =
+    buildHistoryLines(messages);
+  const runStatePatch = resolveHistoryRunStatePatch({
+    status,
+    runId,
+    lastRole,
+    lastUserAt,
+    loadedAt,
+  });
   if (lines.length === 0) return { historyLoadedAt: loadedAt };
   const mergedLines = mergeHistoryWithPending(lines, currentLines);
   const isSame =
     mergedLines.length === currentLines.length &&
     mergedLines.every((line, index) => line === currentLines[index]);
   if (isSame) {
-    const patch: Partial<AgentState> = { historyLoadedAt: loadedAt };
+    const patch: Partial<AgentState> = {
+      historyLoadedAt: loadedAt,
+      ...(runStatePatch ?? {}),
+    };
     if (typeof lastAssistantAt === "number") {
       patch.lastAssistantMessageAt = lastAssistantAt;
-    }
-    if (!runId && status === "running" && lastRole === "assistant") {
-      patch.status = "idle";
-      patch.runId = null;
-      patch.runStartedAt = null;
-      patch.streamText = null;
-      patch.thinkingTrace = null;
     }
     return patch;
   }
@@ -400,14 +477,8 @@ export const buildHistorySyncPatch = ({
     ...(typeof lastAssistantAt === "number" ? { lastAssistantMessageAt: lastAssistantAt } : {}),
     ...(lastUser ? { lastUserMessage: lastUser } : {}),
     historyLoadedAt: loadedAt,
+    ...(runStatePatch ?? {}),
   };
-  if (!runId && status === "running" && lastRole === "assistant") {
-    patch.status = "idle";
-    patch.runId = null;
-    patch.runStartedAt = null;
-    patch.streamText = null;
-    patch.thinkingTrace = null;
-  }
   return patch;
 };
 

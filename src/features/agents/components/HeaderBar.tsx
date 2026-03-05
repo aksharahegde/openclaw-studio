@@ -38,18 +38,16 @@ export const HeaderBar = ({
   }, [menuOpen]);
 
   return (
-    <div className="glass-panel fade-up ui-panel ui-topbar relative z-[180] px-3.5 py-2">
-      <div className="grid items-center gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
-        <div className="min-w-0">
-          <p className="console-title type-page-title text-foreground">
-            OpenClaw Studio
-          </p>
-        </div>
-
-        <div className="flex items-center justify-end gap-1.5">
+    <div className="ui-topbar relative z-[180]">
+      <div className="grid h-10 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center px-3 sm:px-4 md:px-5">
+        <div aria-hidden="true" />
+        <p className="truncate text-sm font-semibold tracking-[0.01em] text-foreground">
+          OpenClaw Studio
+        </p>
+        <div className="flex items-center justify-end gap-1">
           {status === "connecting" ? (
             <span
-              className={`ui-chip px-3 py-1.5 font-mono text-[10px] font-semibold tracking-[0.08em] ${resolveGatewayStatusBadgeClass("connecting")}`}
+              className={`ui-chip px-2 py-0.5 font-mono text-[9px] font-semibold tracking-[0.08em] ${resolveGatewayStatusBadgeClass("connecting")}`}
               data-testid="gateway-connecting-indicator"
               data-status="connecting"
             >
@@ -61,17 +59,17 @@ export const HeaderBar = ({
             <div className="relative z-[210]" ref={menuRef}>
               <button
                 type="button"
-                className="ui-btn-icon"
+                className="ui-btn-icon ui-btn-icon-xs"
                 data-testid="studio-menu-toggle"
                 aria-haspopup="menu"
                 aria-expanded={menuOpen}
                 onClick={() => setMenuOpen((prev) => !prev)}
               >
-                <Plug className="h-4 w-4" />
+                <Plug className="h-3.5 w-3.5" />
                 <span className="sr-only">Open studio menu</span>
               </button>
               {menuOpen ? (
-                <div className="ui-card ui-menu-popover absolute right-0 top-11 z-[260] min-w-44 p-1">
+                <div className="ui-card ui-menu-popover absolute right-0 top-9 z-[260] min-w-44 p-1">
                   <button
                     className="ui-btn-ghost w-full justify-start border-transparent px-3 py-2 text-left text-xs font-medium tracking-normal text-foreground"
                     type="button"

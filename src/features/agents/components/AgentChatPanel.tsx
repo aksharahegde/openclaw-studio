@@ -8,11 +8,12 @@ import {
   type ChangeEvent,
   type KeyboardEvent,
   type MutableRefObject,
+  type ReactNode,
 } from "react";
 import type { AgentState as AgentRecord } from "@/features/agents/state/store";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, ChevronRight, Clock, Cog, Pencil, Shuffle, X } from "lucide-react";
+import { Check, ChevronRight, Clock, Cog, Pencil, Shuffle, Trash2, X } from "lucide-react";
 import type { GatewayModelChoice } from "@/lib/gateway/models";
 import { rewriteMediaLinesToMarkdown } from "@/lib/text/media-markdown";
 import { normalizeAssistantDisplayText } from "@/lib/text/assistantText";
@@ -29,7 +30,6 @@ import {
   type AssistantTraceEvent,
   type AgentChatItem,
 } from "./chatItems";
-import { EmptyStatePanel } from "./EmptyStatePanel";
 
 const formatChatTimestamp = (timestampMs: number): string => {
   return new Intl.DateTimeFormat(undefined, {
@@ -51,6 +51,32 @@ const ASSISTANT_GUTTER_CLASS = "pl-[44px]";
 const ASSISTANT_MAX_WIDTH_DEFAULT_CLASS = "max-w-[68ch]";
 const ASSISTANT_MAX_WIDTH_EXPANDED_CLASS = "max-w-[1120px]";
 const CHAT_TOP_THRESHOLD_PX = 8;
+const EMPTY_CHAT_INTRO_MESSAGES = [
+  "How can I help you today?",
+  "What should we accomplish today?",
+  "Ready when you are. What do you want to tackle?",
+  "What are we working on today?",
+  "I'm here and ready. What's the plan?",
+];
+
+const stableStringHash = (value: string): number => {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+  }
+  return hash;
+};
+
+const resolveEmptyChatIntroMessage = (agentId: string, sessionEpoch: number | undefined): string => {
+  if (EMPTY_CHAT_INTRO_MESSAGES.length === 0) return "How can I help you today?";
+  const normalizedEpoch =
+    typeof sessionEpoch === "number" && Number.isFinite(sessionEpoch)
+      ? Math.max(0, Math.trunc(sessionEpoch))
+      : 0;
+  const offset = stableStringHash(agentId) % EMPTY_CHAT_INTRO_MESSAGES.length;
+  const index = (offset + normalizedEpoch) % EMPTY_CHAT_INTRO_MESSAGES.length;
+  return EMPTY_CHAT_INTRO_MESSAGES[index];
+};
 
 const looksLikePath = (value: string): boolean => {
   if (!value) return false;
@@ -98,8 +124,11 @@ type AgentChatPanelProps = {
   onNewSession?: () => Promise<void> | void;
   onModelChange: (value: string | null) => void;
   onThinkingChange: (value: string | null) => void;
+  onToolCallingToggle?: (enabled: boolean) => void;
+  onThinkingTracesToggle?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
   onSend: (message: string) => void;
+  onRemoveQueuedMessage?: (index: number) => void;
   onStopRun: () => void;
   onAvatarShuffle: () => void;
   pendingExecApprovals?: PendingExecApproval[];
@@ -467,6 +496,39 @@ const AssistantMessageCard = memo(function AssistantMessageCard({
   );
 });
 
+const AssistantIntroCard = memo(function AssistantIntroCard({
+  avatarSeed,
+  avatarUrl,
+  name,
+  title,
+}: {
+  avatarSeed: string;
+  avatarUrl: string | null;
+  name: string;
+  title: string;
+}) {
+  return (
+    <div className="w-full self-start">
+      <div className={`relative w-full ${ASSISTANT_MAX_WIDTH_DEFAULT_CLASS} ${ASSISTANT_GUTTER_CLASS}`}>
+        <div className="absolute left-[4px] top-[2px]">
+          <AgentAvatar seed={avatarSeed} name={name} avatarUrl={avatarUrl} size={22} />
+        </div>
+        <div className="flex items-center justify-between gap-3 py-0.5">
+          <div className="type-meta min-w-0 truncate font-mono text-foreground/90">
+            {name}
+          </div>
+        </div>
+        <div className="ui-chat-assistant-card mt-2">
+          <div className="text-[14px] leading-[1.65] text-foreground">{title}</div>
+          <div className="mt-2 font-mono text-[10px] tracking-[0.03em] text-muted-foreground/80">
+            Try describing a task, bug, or question to get started.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 const AgentChatFinalItems = memo(function AgentChatFinalItems({
   agentId,
   name,
@@ -538,6 +600,7 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
   scrollToBottomNextOutputRef,
   pendingExecApprovals,
   onResolveExecApproval,
+  emptyStateTitle,
 }: {
   agentId: string;
   name: string;
@@ -559,6 +622,7 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
   scrollToBottomNextOutputRef: MutableRefObject<boolean>;
   pendingExecApprovals: PendingExecApproval[];
   onResolveExecApproval?: (id: string, decision: ExecApprovalDecision) => void;
+  emptyStateTitle: string;
 }) {
   const chatRef = useRef<HTMLDivElement | null>(null);
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
@@ -671,7 +735,7 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
       <div
         ref={chatRef}
         data-testid="agent-chat-scroll"
-        className={`ui-chat-scroll h-full overflow-auto p-4 dark:p-6 sm:p-5 dark:sm:p-7 ${showJumpToLatest ? "pb-20" : ""}`}
+        className={`ui-chat-scroll ui-chat-scroll-borderless h-full overflow-auto p-4 dark:p-6 sm:p-5 dark:sm:p-7 ${showJumpToLatest ? "pb-20" : ""}`}
         onScroll={() => updatePinnedFromScroll()}
         onWheel={(event) => {
           event.stopPropagation();
@@ -698,7 +762,12 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
             </div>
           ) : null}
           {!hasTranscriptContent ? (
-            <EmptyStatePanel title="No messages yet." compact className="p-3 text-xs" />
+            <AssistantIntroCard
+              avatarSeed={avatarSeed}
+              avatarUrl={avatarUrl}
+              name={name}
+              title={emptyStateTitle}
+            />
           ) : (
             <>
               <AgentChatFinalItems
@@ -756,6 +825,27 @@ const AgentChatTranscript = memo(function AgentChatTranscript({
   );
 });
 
+const noopToggle = () => {};
+const InlineHoverTooltip = ({
+  text,
+  children,
+}: {
+  text: string;
+  children: ReactNode;
+}) => {
+  return (
+    <div className="group/tooltip relative inline-flex">
+      {children}
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute -top-7 left-1/2 z-20 w-max max-w-none -translate-x-1/2 whitespace-nowrap rounded-md border border-border/70 bg-card px-2 py-1 font-mono text-[10px] text-foreground opacity-0 shadow-sm transition-opacity duration-150 group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100"
+      >
+        {text}
+      </span>
+    </div>
+  );
+};
+
 const AgentChatComposer = memo(function AgentChatComposer({
   value,
   onChange,
@@ -767,7 +857,19 @@ const AgentChatComposer = memo(function AgentChatComposer({
   stopDisabledReason,
   running,
   sendDisabled,
+  queuedMessages,
+  onRemoveQueuedMessage,
   inputRef,
+  modelOptions,
+  modelValue,
+  allowThinking,
+  thinkingValue,
+  onModelChange,
+  onThinkingChange,
+  toolCallingEnabled,
+  showThinkingTraces,
+  onToolCallingToggle,
+  onThinkingTracesToggle,
 }: {
   value: string;
   onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
@@ -779,43 +881,219 @@ const AgentChatComposer = memo(function AgentChatComposer({
   stopDisabledReason?: string | null;
   running: boolean;
   sendDisabled: boolean;
+  queuedMessages: string[];
+  onRemoveQueuedMessage?: (index: number) => void;
   inputRef: (el: HTMLTextAreaElement | HTMLInputElement | null) => void;
+  modelOptions: { value: string; label: string }[];
+  modelValue: string;
+  allowThinking: boolean;
+  thinkingValue: string;
+  onModelChange: (value: string | null) => void;
+  onThinkingChange: (value: string | null) => void;
+  toolCallingEnabled: boolean;
+  showThinkingTraces: boolean;
+  onToolCallingToggle: (enabled: boolean) => void;
+  onThinkingTracesToggle: (enabled: boolean) => void;
 }) {
   const stopReason = stopDisabledReason?.trim() ?? "";
   const stopDisabled = !canSend || stopBusy || Boolean(stopReason);
   const stopAriaLabel = stopReason ? `Stop unavailable: ${stopReason}` : "Stop";
+  const modelSelectedLabel = useMemo(() => {
+    if (modelOptions.length === 0) return "No models found";
+    return modelOptions.find((option) => option.value === modelValue)?.label ?? modelValue;
+  }, [modelOptions, modelValue]);
+  const modelSelectWidthCh = Math.max(11, Math.min(44, modelSelectedLabel.length + 6));
+  const thinkingSelectedLabel = useMemo(() => {
+    switch (thinkingValue) {
+      case "off":
+        return "Off";
+      case "minimal":
+        return "Minimal";
+      case "low":
+        return "Low";
+      case "medium":
+        return "Medium";
+      case "high":
+        return "High";
+      case "xhigh":
+        return "XHigh";
+      default:
+        return "Default";
+    }
+  }, [thinkingValue]);
+  const thinkingSelectWidthCh = Math.max(9, Math.min(22, thinkingSelectedLabel.length + 6));
   return (
-    <div className="flex items-end gap-2">
-      <textarea
-        ref={inputRef}
-        rows={1}
-        value={value}
-        className="flex-1 resize-none rounded-md border border-border/70 bg-surface-3 px-3 py-2 text-[13px] text-foreground outline-none transition"
-        onChange={onChange}
-        onKeyDown={onKeyDown}
-        placeholder="type a message"
-      />
-      {running ? (
-        <span className="inline-flex" title={stopReason || undefined}>
-          <button
-            className="rounded-md border border-border/70 bg-surface-3 px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
-            type="button"
-            onClick={onStop}
-            disabled={stopDisabled}
-            aria-label={stopAriaLabel}
+    <div className="rounded-2xl border border-border/65 bg-surface-2/45 px-3 py-2">
+      {queuedMessages.length > 0 ? (
+        <div
+          className={`mb-2 grid items-start gap-2 ${
+            running ? "grid-cols-[minmax(0,1fr)_auto_auto]" : "grid-cols-[minmax(0,1fr)_auto]"
+          }`}
+        >
+          <div
+            className="min-w-0 max-w-full space-y-1 overflow-hidden"
+            data-testid="queued-messages-bar"
+            aria-label="Queued messages"
           >
-            {stopBusy ? "Stopping" : "Stop"}
+            {queuedMessages.map((queuedMessage, index) => (
+              <div
+                key={`${index}-${queuedMessage}`}
+                className="flex w-full min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-md border border-border/70 bg-card/80 px-2 py-1 text-[11px] text-foreground"
+              >
+                <span className="font-mono text-[10px] uppercase tracking-[0.06em] text-muted-foreground">
+                  Queued
+                </span>
+                <span
+                  className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"
+                  title={queuedMessage}
+                >
+                  {queuedMessage}
+                </span>
+                <button
+                  type="button"
+                  className="inline-flex h-4 w-4 flex-none items-center justify-center rounded-sm text-muted-foreground transition hover:bg-surface-2 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  aria-label={`Remove queued message ${index + 1}`}
+                  onClick={() => onRemoveQueuedMessage?.(index)}
+                  disabled={!onRemoveQueuedMessage}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+          {running ? (
+            <button
+              type="button"
+              aria-hidden="true"
+              tabIndex={-1}
+              disabled
+              className="invisible rounded-md border border-border/70 bg-surface-3 px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] text-foreground"
+            >
+              {stopBusy ? "Stopping" : "Stop"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-hidden="true"
+            tabIndex={-1}
+            disabled
+            className="ui-btn-primary ui-btn-send invisible px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em]"
+          >
+            Send
           </button>
-        </span>
+        </div>
       ) : null}
-      <button
-        className="ui-btn-primary ui-btn-send px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
-        type="button"
-        onClick={onSend}
-        disabled={sendDisabled}
-      >
-        Send
-      </button>
+      <div className="flex items-end gap-2">
+        <textarea
+          ref={inputRef}
+          rows={1}
+          value={value}
+          className="chat-composer-input min-h-[28px] flex-1 resize-none border-0 bg-transparent px-0 py-1 text-[15px] leading-6 text-foreground outline-none shadow-none transition placeholder:text-muted-foreground/65 focus:outline-none focus-visible:outline-none focus-visible:ring-0"
+          onChange={onChange}
+          onKeyDown={onKeyDown}
+          placeholder="type a message"
+        />
+        {running ? (
+          <span className="inline-flex" title={stopReason || undefined}>
+            <button
+              className="rounded-md border border-border/70 bg-surface-3 px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] text-foreground transition hover:bg-surface-2 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
+              type="button"
+              onClick={onStop}
+              disabled={stopDisabled}
+              aria-label={stopAriaLabel}
+            >
+              {stopBusy ? "Stopping" : "Stop"}
+            </button>
+          </span>
+        ) : null}
+        <button
+          className="ui-btn-primary ui-btn-send px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
+          type="button"
+          onClick={onSend}
+          disabled={sendDisabled}
+        >
+          Send
+        </button>
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <InlineHoverTooltip text="Choose model">
+            <select
+              className="ui-input ui-control-important h-6 min-w-0 rounded-md px-1.5 text-[10px] font-semibold text-foreground"
+              aria-label="Model"
+              value={modelValue}
+              style={{ width: `${modelSelectWidthCh}ch` }}
+              onChange={(event) => {
+                const nextValue = event.target.value.trim();
+                onModelChange(nextValue ? nextValue : null);
+                event.currentTarget.blur();
+              }}
+            >
+              {modelOptions.length === 0 ? (
+                <option value="">No models found</option>
+              ) : null}
+              {modelOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </InlineHoverTooltip>
+          {allowThinking ? (
+            <InlineHoverTooltip text="Select reasoning effort">
+              <select
+                className="ui-input ui-control-important h-6 rounded-md px-1.5 text-[10px] font-semibold text-foreground"
+                aria-label="Thinking"
+                value={thinkingValue}
+                style={{ width: `${thinkingSelectWidthCh}ch` }}
+                onChange={(event) => {
+                  const nextValue = event.target.value.trim();
+                  onThinkingChange(nextValue ? nextValue : null);
+                }}
+              >
+                <option value="">Default</option>
+                <option value="off">Off</option>
+                <option value="minimal">Minimal</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+                <option value="xhigh">XHigh</option>
+              </select>
+            </InlineHoverTooltip>
+          ) : null}
+        </div>
+        <div className="ml-auto flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span className="font-mono tracking-[0.02em]">Show</span>
+          <button
+            type="button"
+            role="switch"
+            aria-label="Show tool calls"
+            aria-checked={toolCallingEnabled}
+            className={`inline-flex h-5 items-center rounded-sm border px-1.5 font-mono text-[10px] tracking-[0.01em] transition ${
+              toolCallingEnabled
+                ? "border-primary/45 bg-primary/14 text-foreground"
+                : "border-border/70 bg-surface-2/40 text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => onToolCallingToggle(!toolCallingEnabled)}
+          >
+            Tools
+          </button>
+          <button
+            type="button"
+            role="switch"
+            aria-label="Show thinking"
+            aria-checked={showThinkingTraces}
+            className={`inline-flex h-5 items-center rounded-sm border px-1.5 font-mono text-[10px] tracking-[0.01em] transition ${
+              showThinkingTraces
+                ? "border-primary/45 bg-primary/14 text-foreground"
+                : "border-border/70 bg-surface-2/40 text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => onThinkingTracesToggle(!showThinkingTraces)}
+          >
+            Thinking
+          </button>
+        </div>
+      </div>
     </div>
   );
 });
@@ -833,8 +1111,11 @@ export const AgentChatPanel = ({
   onNewSession,
   onModelChange,
   onThinkingChange,
+  onToolCallingToggle = noopToggle,
+  onThinkingTracesToggle = noopToggle,
   onDraftChange,
   onSend,
+  onRemoveQueuedMessage,
   onStopRun,
   onAvatarShuffle,
   pendingExecApprovals = [],
@@ -925,7 +1206,7 @@ export const AgentChatPanel = ({
 
   const handleSend = useCallback(
     (message: string) => {
-      if (!canSend || agent.status === "running") return;
+      if (!canSend) return;
       const trimmed = message.trim();
       if (!trimmed) return;
       plainDraftRef.current = "";
@@ -934,7 +1215,7 @@ export const AgentChatPanel = ({
       scrollToBottomNextOutputRef.current = true;
       onSend(trimmed);
     },
-    [agent.status, canSend, onDraftChange, onSend]
+    [canSend, onDraftChange, onSend]
   );
 
   const chatItems = useMemo(
@@ -983,7 +1264,11 @@ export const AgentChatPanel = ({
   const allowThinking = selectedModel?.reasoning !== false;
 
   const avatarSeed = agent.avatarSeed ?? agent.agentId;
-  const sendDisabled = !canSend || running || !draftValue.trim();
+  const emptyStateTitle = useMemo(
+    () => resolveEmptyChatIntroMessage(agent.agentId, agent.sessionEpoch),
+    [agent.agentId, agent.sessionEpoch]
+  );
+  const sendDisabled = !canSend || !draftValue.trim();
 
   const handleComposerChange = useCallback(
     (event: ChangeEvent<HTMLTextAreaElement>) => {
@@ -1096,7 +1381,7 @@ export const AgentChatPanel = ({
 
   return (
     <div data-agent-panel className="group fade-up relative flex h-full w-full flex-col">
-      <div className="px-3 pt-3 sm:px-4 sm:pt-4">
+      <div className="px-3 pt-2 sm:px-4 sm:pt-3">
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
             <div className="group/avatar relative">
@@ -1104,7 +1389,7 @@ export const AgentChatPanel = ({
                 seed={avatarSeed}
                 name={agent.name}
                 avatarUrl={agent.avatarUrl ?? null}
-                size={96}
+                size={84}
                 isSelected={isSelected}
               />
               <button
@@ -1186,60 +1471,12 @@ export const AgentChatPanel = ({
               {renameError ? (
                 <div className="ui-text-danger mt-1 text-[11px]">{renameError}</div>
               ) : null}
-
-              <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_128px]">
-                <label className="flex min-w-0 flex-col gap-1 font-mono text-[12px] font-medium tracking-[0.02em] text-muted-foreground">
-                  <span>Model</span>
-                  <select
-                    className="ui-input ui-control-important h-8 w-full min-w-0 overflow-hidden text-ellipsis whitespace-nowrap rounded-md px-2 text-[11px] font-semibold text-foreground"
-                    aria-label="Model"
-                    value={modelValue}
-                    onChange={(event) => {
-                      const value = event.target.value.trim();
-                      onModelChange(value ? value : null);
-                    }}
-                  >
-                    {modelOptionsWithFallback.length === 0 ? (
-                      <option value="">No models found</option>
-                    ) : null}
-                    {modelOptionsWithFallback.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {allowThinking ? (
-                  <label className="flex flex-col gap-1 font-mono text-[12px] font-medium tracking-[0.02em] text-muted-foreground">
-                    <span>Thinking</span>
-                    <select
-                      className="ui-input ui-control-important h-8 rounded-md px-2 text-[11px] font-semibold text-foreground"
-                      aria-label="Thinking"
-                      value={agent.thinkingLevel ?? ""}
-                      onChange={(event) => {
-                        const value = event.target.value.trim();
-                        onThinkingChange(value ? value : null);
-                      }}
-                    >
-                      <option value="">Default</option>
-                      <option value="off">Off</option>
-                      <option value="minimal">Minimal</option>
-                      <option value="low">Low</option>
-                      <option value="medium">Medium</option>
-                      <option value="high">High</option>
-                      <option value="xhigh">XHigh</option>
-                    </select>
-                  </label>
-                ) : (
-                  <div />
-                )}
-              </div>
             </div>
           </div>
 
           <div className="mt-0.5 flex items-center gap-2">
             <button
-              className="nodrag ui-btn-primary px-3 py-2 font-mono text-[12px] font-medium tracking-[0.02em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
+              className="nodrag ui-btn-primary px-2.5 py-1.5 font-mono text-[11px] font-medium tracking-[0.02em] disabled:cursor-not-allowed disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
               type="button"
               data-testid="agent-new-session-toggle"
               aria-label="Start new session"
@@ -1287,9 +1524,10 @@ export const AgentChatPanel = ({
           scrollToBottomNextOutputRef={scrollToBottomNextOutputRef}
           pendingExecApprovals={pendingExecApprovals}
           onResolveExecApproval={onResolveExecApproval}
+          emptyStateTitle={emptyStateTitle}
         />
 
-        <div className="mt-3 border-t border-border/60 pt-3">
+        <div className="mt-3">
           <AgentChatComposer
             value={draftValue}
             inputRef={handleDraftRef}
@@ -1302,6 +1540,21 @@ export const AgentChatPanel = ({
             stopDisabledReason={stopDisabledReason}
             running={running}
             sendDisabled={sendDisabled}
+            queuedMessages={agent.queuedMessages ?? []}
+            onRemoveQueuedMessage={onRemoveQueuedMessage}
+            modelOptions={modelOptionsWithFallback.map((option) => ({
+              value: option.value,
+              label: option.label,
+            }))}
+            modelValue={modelValue}
+            allowThinking={allowThinking}
+            thinkingValue={agent.thinkingLevel ?? ""}
+            onModelChange={onModelChange}
+            onThinkingChange={onThinkingChange}
+            toolCallingEnabled={agent.toolCallingEnabled}
+            showThinkingTraces={agent.showThinkingTraces}
+            onToolCallingToggle={onToolCallingToggle}
+            onThinkingTracesToggle={onThinkingTracesToggle}
           />
         </div>
       </div>

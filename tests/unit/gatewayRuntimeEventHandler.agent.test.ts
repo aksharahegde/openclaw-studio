@@ -164,6 +164,94 @@ describe("gateway runtime event handler (agent)", () => {
     expect("streamText" in patch).toBe(false);
   });
 
+  it("does not publish streamText for assistant open thinking chunk", () => {
+    const agents = [createAgent({ status: "running", runId: "run-open-think", runStartedAt: 900 })];
+    const queueLivePatch = vi.fn();
+    const handler = createGatewayRuntimeEventHandler({
+      getStatus: () => "connected",
+      getAgents: () => agents,
+      dispatch: vi.fn(),
+      queueLivePatch,
+      clearPendingLivePatch: vi.fn(),
+      now: () => 1000,
+      loadSummarySnapshot: vi.fn(async () => {}),
+      requestHistoryRefresh: vi.fn(async () => {}),
+      refreshHeartbeatLatestUpdate: vi.fn(),
+      bumpHeartbeatTick: vi.fn(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms) as unknown as number,
+      clearTimeout: (id) => clearTimeout(id as unknown as NodeJS.Timeout),
+      isDisconnectLikeError: () => false,
+      logWarn: vi.fn(),
+      updateSpecialLatestUpdate: vi.fn(),
+    });
+
+    handler.handleEvent({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId: "run-open-think",
+        sessionKey: agents[0]!.sessionKey,
+        stream: "assistant",
+        data: { text: "<thinking>planning" },
+      },
+    } as EventFrame);
+
+    const lastCall = queueLivePatch.mock.calls[queueLivePatch.mock.calls.length - 1] as
+      | [string, Partial<AgentState>]
+      | undefined;
+    if (!lastCall) throw new Error("Expected queueLivePatch to be called");
+    const patch = lastCall[1];
+    expect(patch.status).toBe("running");
+    expect(patch.runId).toBe("run-open-think");
+    expect(patch.thinkingTrace).toBe("planning");
+    expect("streamText" in patch).toBe(false);
+  });
+
+  it("publishes streamText when assistant thinking block is closed and visible text is present", () => {
+    const agents = [
+      createAgent({ status: "running", runId: "run-closed-think", runStartedAt: 900 }),
+    ];
+    const queueLivePatch = vi.fn();
+    const handler = createGatewayRuntimeEventHandler({
+      getStatus: () => "connected",
+      getAgents: () => agents,
+      dispatch: vi.fn(),
+      queueLivePatch,
+      clearPendingLivePatch: vi.fn(),
+      now: () => 1000,
+      loadSummarySnapshot: vi.fn(async () => {}),
+      requestHistoryRefresh: vi.fn(async () => {}),
+      refreshHeartbeatLatestUpdate: vi.fn(),
+      bumpHeartbeatTick: vi.fn(),
+      setTimeout: (fn, ms) => setTimeout(fn, ms) as unknown as number,
+      clearTimeout: (id) => clearTimeout(id as unknown as NodeJS.Timeout),
+      isDisconnectLikeError: () => false,
+      logWarn: vi.fn(),
+      updateSpecialLatestUpdate: vi.fn(),
+    });
+
+    handler.handleEvent({
+      type: "event",
+      event: "agent",
+      payload: {
+        runId: "run-closed-think",
+        sessionKey: agents[0]!.sessionKey,
+        stream: "assistant",
+        data: { text: "<thinking>same</thinking>same" },
+      },
+    } as EventFrame);
+
+    const lastCall = queueLivePatch.mock.calls[queueLivePatch.mock.calls.length - 1] as
+      | [string, Partial<AgentState>]
+      | undefined;
+    if (!lastCall) throw new Error("Expected queueLivePatch to be called");
+    const patch = lastCall[1];
+    expect(patch.status).toBe("running");
+    expect(patch.runId).toBe("run-closed-think");
+    expect(patch.thinkingTrace).toBe("same");
+    expect(patch.streamText).toBe("same");
+  });
+
   it("allows assistant stream extension when chat stream stalls", () => {
     const agents = [
       createAgent({

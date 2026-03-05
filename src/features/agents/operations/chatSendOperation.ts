@@ -1,4 +1,8 @@
-import { syncGatewaySessionSettings, type GatewayClient } from "@/lib/gateway/GatewayClient";
+import {
+  isWebchatSessionMutationBlockedError,
+  syncGatewaySessionSettings,
+  type GatewayClient,
+} from "@/lib/gateway/GatewayClient";
 import {
   buildAgentInstruction,
   isMetaMarkdown,
@@ -38,6 +42,22 @@ const resolveLatestTranscriptTimestampMs = (agent: AgentState): number | null =>
     latest = latest === null ? ts : Math.max(latest, ts);
   }
   return latest;
+};
+
+const resolveChatSendCompletionMode = (
+  payload: unknown,
+  optimisticRunId: string
+): "streaming-expected" | "terminal-immediate" => {
+  if (!payload || typeof payload !== "object") {
+    return "terminal-immediate";
+  }
+  const value = payload as { status?: unknown; runId?: unknown };
+  const status = typeof value.status === "string" ? value.status.trim().toLowerCase() : "";
+  const runId = typeof value.runId === "string" ? value.runId.trim() : "";
+  if ((status === "started" || status === "in_flight") && runId === optimisticRunId) {
+    return "streaming-expected";
+  }
+  return "terminal-immediate";
 };
 
 export async function sendChatMessageViaStudio(params: {
@@ -135,24 +155,36 @@ export async function sendChatMessageViaStudio(params: {
 
     let createdSession = agent.sessionCreated;
     if (!agent.sessionSettingsSynced) {
-      await syncGatewaySessionSettings({
-        client: params.client as unknown as GatewayClient,
-        sessionKey: params.sessionKey,
-        model: agent.model ?? null,
-        thinkingLevel: agent.thinkingLevel ?? null,
-        execHost: agent.sessionExecHost,
-        execSecurity: agent.sessionExecSecurity,
-        execAsk: agent.sessionExecAsk,
-      });
-      createdSession = true;
-      params.dispatch({
-        type: "updateAgent",
-        agentId,
-        patch: { sessionSettingsSynced: true, sessionCreated: true },
-      });
+      try {
+        await syncGatewaySessionSettings({
+          client: params.client as unknown as GatewayClient,
+          sessionKey: params.sessionKey,
+          model: agent.model ?? null,
+          thinkingLevel: agent.thinkingLevel ?? null,
+          execHost: agent.sessionExecHost,
+          execSecurity: agent.sessionExecSecurity,
+          execAsk: agent.sessionExecAsk,
+        });
+        createdSession = true;
+        params.dispatch({
+          type: "updateAgent",
+          agentId,
+          patch: { sessionSettingsSynced: true, sessionCreated: true },
+        });
+      } catch (syncError) {
+        if (!isWebchatSessionMutationBlockedError(syncError)) {
+          throw syncError;
+        }
+        createdSession = true;
+        params.dispatch({
+          type: "updateAgent",
+          agentId,
+          patch: { sessionSettingsSynced: true, sessionCreated: true },
+        });
+      }
     }
 
-    await params.client.call("chat.send", {
+    const sendResult = await params.client.call("chat.send", {
       sessionKey: params.sessionKey,
       message: buildAgentInstruction({ message: trimmed }),
       deliver: false,
@@ -164,6 +196,20 @@ export async function sendChatMessageViaStudio(params: {
         type: "updateAgent",
         agentId,
         patch: { sessionCreated: true },
+      });
+    }
+
+    if (resolveChatSendCompletionMode(sendResult, runId) === "terminal-immediate") {
+      params.dispatch({
+        type: "updateAgent",
+        agentId,
+        patch: {
+          status: "idle",
+          runId: null,
+          runStartedAt: null,
+          streamText: null,
+          thinkingTrace: null,
+        },
       });
     }
   } catch (err) {

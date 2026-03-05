@@ -1,4 +1,5 @@
 import {
+  isWebchatSessionMutationBlockedError,
   syncGatewaySessionSettings,
   type GatewayClient,
   type GatewaySessionsPatchResult,
@@ -9,6 +10,8 @@ type SessionSettingField = "model" | "thinkingLevel";
 type AgentSessionState = {
   agentId: string;
   sessionCreated: boolean;
+  model?: string | null;
+  thinkingLevel?: string | null;
 };
 
 type SessionSettingsDispatchAction =
@@ -19,6 +22,7 @@ type SessionSettingsDispatchAction =
         model?: string | null;
         thinkingLevel?: string | null;
         sessionSettingsSynced?: boolean;
+        sessionCreated?: boolean;
       };
     }
   | {
@@ -45,7 +49,13 @@ const buildFallbackError = (field: SessionSettingField) =>
 const buildErrorPrefix = (field: SessionSettingField) =>
   field === "model" ? "Model update failed" : "Thinking update failed";
 
+const buildWebchatBlockedMessage = (field: SessionSettingField) =>
+  field === "model"
+    ? "Model update not applied: this gateway blocks sessions.patch for WebChat clients; message sending still works."
+    : "Thinking level update not applied: this gateway blocks sessions.patch for WebChat clients; message sending still works.";
+
 export const applySessionSettingMutation = async ({
+  agents,
   dispatch,
   client,
   agentId,
@@ -53,6 +63,9 @@ export const applySessionSettingMutation = async ({
   field,
   value,
 }: ApplySessionSettingMutationParams) => {
+  const targetAgent = agents.find((candidate) => candidate.agentId === agentId) ?? null;
+  const previousModel = targetAgent?.model ?? null;
+  const previousThinkingLevel = targetAgent?.thinkingLevel ?? null;
   dispatch({
     type: "updateAgent",
     agentId,
@@ -91,6 +104,25 @@ export const applySessionSettingMutation = async ({
       patch,
     });
   } catch (err) {
+    if (isWebchatSessionMutationBlockedError(err)) {
+      dispatch({
+        type: "updateAgent",
+        agentId,
+        patch: {
+          ...(field === "model"
+            ? { model: previousModel }
+            : { thinkingLevel: previousThinkingLevel }),
+          sessionSettingsSynced: true,
+          sessionCreated: true,
+        },
+      });
+      dispatch({
+        type: "appendOutput",
+        agentId,
+        line: buildWebchatBlockedMessage(field),
+      });
+      return;
+    }
     const msg = err instanceof Error ? err.message : buildFallbackError(field);
     dispatch({
       type: "appendOutput",

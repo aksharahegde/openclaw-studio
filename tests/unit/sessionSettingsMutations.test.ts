@@ -2,6 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { applySessionSettingMutation } from "@/features/agents/state/sessionSettingsMutations";
 import type { GatewayClient } from "@/lib/gateway/GatewayClient";
+import { GatewayResponseError } from "@/lib/gateway/errors";
+
+const createWebchatBlockedPatchError = () =>
+  new GatewayResponseError({
+    code: "INVALID_REQUEST",
+    message: "webchat clients cannot patch sessions; use chat.send for session-scoped updates",
+  });
 
 describe("session settings mutations helper", () => {
   it("applies optimistic update before remote sync", async () => {
@@ -126,5 +133,59 @@ describe("session settings mutations helper", () => {
       agentId: "agent-1",
       line: "Model update failed: network timeout",
     });
+  });
+
+  it("restores sync state and appends capability notice when webchat patch is blocked", async () => {
+    const dispatch = vi.fn();
+    const client = {
+      call: vi.fn(async () => {
+        throw createWebchatBlockedPatchError();
+      }),
+    } as unknown as GatewayClient;
+
+    await applySessionSettingMutation({
+      agents: [{ agentId: "agent-1", sessionCreated: true, model: "openai/gpt-5-mini" }],
+      dispatch,
+      client,
+      agentId: "agent-1",
+      sessionKey: "agent:1:studio:abc",
+      field: "model",
+      value: "openai/gpt-5",
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "updateAgent",
+      agentId: "agent-1",
+      patch: {
+        model: "openai/gpt-5-mini",
+        sessionSettingsSynced: true,
+        sessionCreated: true,
+      },
+    });
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "appendOutput",
+      agentId: "agent-1",
+      line:
+        "Model update not applied: this gateway blocks sessions.patch for WebChat clients; message sending still works.",
+    });
+
+    const failureLines = dispatch.mock.calls
+      .map((entry) => entry[0])
+      .filter(
+        (
+          action
+        ): action is {
+          type: "appendOutput";
+          line: string;
+        } =>
+          action &&
+          typeof action === "object" &&
+          "type" in action &&
+          action.type === "appendOutput" &&
+          "line" in action &&
+          typeof action.line === "string" &&
+          action.line.startsWith("Model update failed:")
+      );
+    expect(failureLines).toHaveLength(0);
   });
 });

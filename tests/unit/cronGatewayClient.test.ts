@@ -5,9 +5,30 @@ import {
   listCronJobs,
   removeCronJob,
   removeCronJobsForAgent,
+  removeCronJobsForAgentWithBackup,
+  restoreCronJobs,
   runCronJobNow,
+  type CronJobSummary,
 } from "@/lib/cron/types";
 import type { GatewayClient } from "@/lib/gateway/GatewayClient";
+
+const createListedJob = (params: {
+  id: string;
+  name: string;
+  agentId?: string;
+  updatedAtMs?: number;
+}): CronJobSummary => ({
+  id: params.id,
+  name: params.name,
+  agentId: params.agentId,
+  enabled: true,
+  updatedAtMs: params.updatedAtMs ?? 1_700_000_000_000,
+  schedule: { kind: "every", everyMs: 60_000 },
+  sessionTarget: "isolated",
+  wakeMode: "now",
+  payload: { kind: "agentTurn", message: "Run checks." },
+  state: {},
+});
 
 describe("cron gateway client", () => {
   it("lists_jobs_via_cron_list_include_disabled_true", async () => {
@@ -55,9 +76,9 @@ describe("cron gateway client", () => {
         if (method === "cron.list") {
           return {
             jobs: [
-              { id: "job-1", name: "Job 1", agentId: "agent-1" },
-              { id: "job-2", name: "Job 2", agentId: "agent-2" },
-              { id: "job-3", name: "Job 3", agentId: "agent-1" },
+              createListedJob({ id: "job-1", name: "Job 1", agentId: "agent-1" }),
+              createListedJob({ id: "job-2", name: "Job 2", agentId: "agent-2" }),
+              createListedJob({ id: "job-3", name: "Job 3", agentId: "agent-1" }),
             ],
           };
         }
@@ -87,7 +108,7 @@ describe("cron gateway client", () => {
       call: vi.fn(async (method: string) => {
         if (method === "cron.list") {
           return {
-            jobs: [{ id: "job-1", name: "Job 1", agentId: "agent-1" }],
+            jobs: [createListedJob({ id: "job-1", name: "Job 1", agentId: "agent-1" })],
           };
         }
         if (method === "cron.remove") {
@@ -100,6 +121,157 @@ describe("cron gateway client", () => {
     await expect(removeCronJobsForAgent(client, "agent-1")).rejects.toThrow(
       'Failed to delete cron job "Job 1" (job-1).'
     );
+  });
+
+  it("returns_restore_inputs_when_removing_jobs_with_backup", async () => {
+    const client = {
+      call: vi.fn(async (method: string, payload: { id?: string }) => {
+        if (method === "cron.list") {
+          return {
+            jobs: [
+              createListedJob({ id: "job-1", name: "Job 1", agentId: "agent-1" }),
+              createListedJob({ id: "job-2", name: "Job 2", agentId: "agent-2" }),
+              createListedJob({ id: "job-3", name: "Job 3", agentId: "agent-1" }),
+            ],
+          };
+        }
+        if (method === "cron.remove") {
+          return { ok: true, removed: payload.id !== "job-3" };
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      }),
+    } as unknown as GatewayClient;
+
+    await expect(removeCronJobsForAgentWithBackup(client, "agent-1")).resolves.toEqual([
+      {
+        name: "Job 1",
+        agentId: "agent-1",
+        sessionKey: undefined,
+        description: undefined,
+        enabled: true,
+        deleteAfterRun: undefined,
+        schedule: { kind: "every", everyMs: 60_000 },
+        sessionTarget: "isolated",
+        wakeMode: "now",
+        payload: { kind: "agentTurn", message: "Run checks." },
+        delivery: undefined,
+      },
+    ]);
+  });
+
+  it("restores_removed_jobs_when_backup_remove_fails_midway", async () => {
+    const client = {
+      call: vi.fn(async (method: string, payload: { id?: string; name?: string }) => {
+        if (method === "cron.list") {
+          return {
+            jobs: [
+              createListedJob({ id: "job-1", name: "Job 1", agentId: "agent-1" }),
+              createListedJob({ id: "job-2", name: "Job 2", agentId: "agent-1" }),
+            ],
+          };
+        }
+        if (method === "cron.remove") {
+          if (payload.id === "job-1") return { ok: true, removed: true };
+          return { ok: false, removed: false };
+        }
+        if (method === "cron.add") {
+          return { id: "restored-job-1", name: payload.name };
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      }),
+    } as unknown as GatewayClient;
+
+    await expect(removeCronJobsForAgentWithBackup(client, "agent-1")).rejects.toThrow(
+      'Failed to delete cron job "Job 2" (job-2).'
+    );
+
+    expect(client.call).toHaveBeenCalledWith("cron.add", {
+      name: "Job 1",
+      agentId: "agent-1",
+      sessionKey: undefined,
+      description: undefined,
+      enabled: true,
+      deleteAfterRun: undefined,
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: { kind: "agentTurn", message: "Run checks." },
+      delivery: undefined,
+    });
+  });
+
+  it("restores_removed_jobs_when_remove_call_throws_midway", async () => {
+    const thrown = new Error("network interrupted");
+    const client = {
+      call: vi.fn(async (method: string, payload: { id?: string; name?: string }) => {
+        if (method === "cron.list") {
+          return {
+            jobs: [
+              createListedJob({ id: "job-1", name: "Job 1", agentId: "agent-1" }),
+              createListedJob({ id: "job-2", name: "Job 2", agentId: "agent-1" }),
+            ],
+          };
+        }
+        if (method === "cron.remove") {
+          if (payload.id === "job-1") return { ok: true, removed: true };
+          throw thrown;
+        }
+        if (method === "cron.add") {
+          return { id: "restored-job-1", name: payload.name };
+        }
+        throw new Error(`Unexpected method: ${method}`);
+      }),
+    } as unknown as GatewayClient;
+
+    await expect(removeCronJobsForAgentWithBackup(client, "agent-1")).rejects.toBe(thrown);
+
+    expect(client.call).toHaveBeenCalledWith("cron.add", {
+      name: "Job 1",
+      agentId: "agent-1",
+      sessionKey: undefined,
+      description: undefined,
+      enabled: true,
+      deleteAfterRun: undefined,
+      schedule: { kind: "every", everyMs: 60_000 },
+      sessionTarget: "isolated",
+      wakeMode: "now",
+      payload: { kind: "agentTurn", message: "Run checks." },
+      delivery: undefined,
+    });
+  });
+
+  it("throws_actionable_error_when_restore_fails", async () => {
+    const client = {
+      call: vi.fn(async (_method: string, payload: { name?: string }) => {
+        if (payload.name === "Job 2") {
+          throw new Error("cron.add failed");
+        }
+        return { id: "job-restored", name: payload.name };
+      }),
+    } as unknown as GatewayClient;
+
+    await expect(
+      restoreCronJobs(client, [
+        {
+          name: "Job 1",
+          agentId: "agent-1",
+          enabled: true,
+          schedule: { kind: "every", everyMs: 60_000 },
+          sessionTarget: "isolated",
+          wakeMode: "now",
+          payload: { kind: "agentTurn", message: "Run checks." },
+        },
+        {
+          name: "Job 2",
+          agentId: "agent-1",
+          enabled: true,
+          schedule: { kind: "every", everyMs: 120_000 },
+          sessionTarget: "isolated",
+          wakeMode: "now",
+          payload: { kind: "agentTurn", message: "Run checks again." },
+        },
+      ])
+    ).rejects.toThrow('Failed to restore cron job "Job 2" (agent-1): cron.add failed');
   });
 
   it("creates_job_via_cron_add", async () => {

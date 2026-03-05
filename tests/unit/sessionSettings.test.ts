@@ -1,9 +1,37 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { syncGatewaySessionSettings } from "@/lib/gateway/GatewayClient";
+import {
+  isWebchatSessionMutationBlockedError,
+  syncGatewaySessionSettings,
+} from "@/lib/gateway/GatewayClient";
 import type { GatewayClient } from "@/lib/gateway/GatewayClient";
+import { GatewayResponseError } from "@/lib/gateway/errors";
 
 describe("session settings sync helper", () => {
+  it("detects webchat session mutation blocked gateway errors", () => {
+    const blocked = new GatewayResponseError({
+      code: "INVALID_REQUEST",
+      message: "webchat clients cannot patch sessions; use chat.send for session-scoped updates",
+    });
+    expect(isWebchatSessionMutationBlockedError(blocked)).toBe(true);
+  });
+
+  it("does not misclassify unrelated invalid request errors", () => {
+    const invalid = new GatewayResponseError({
+      code: "INVALID_REQUEST",
+      message: "invalid model ref",
+    });
+    expect(isWebchatSessionMutationBlockedError(invalid)).toBe(false);
+  });
+
+  it("does not misclassify non-gateway errors", () => {
+    expect(
+      isWebchatSessionMutationBlockedError(
+        new Error("webchat clients cannot patch sessions; use chat.send for session-scoped updates")
+      )
+    ).toBe(false);
+  });
+
   it("throws when session key is missing", async () => {
     const client = { call: vi.fn() } as unknown as GatewayClient;
     await expect(
